@@ -85,11 +85,11 @@ def preprocess_merge(energy_data, weather_data, sun_data):
 
 def main():
     # Energy data
-    energy_data = pd.read_excel('Generated_Data_Model.xlsx', sheet_name='Energy_data')
+    energy_data = pd.read_excel('../Data/Generated_Data_Model.xlsx', sheet_name='Energy_data')
     # Weather data
-    weather_data = pd.read_excel('Generated_Data_Model.xlsx', sheet_name='Weather_data_per_zone')
+    weather_data = pd.read_excel('../Data/Generated_Data_Model.xlsx', sheet_name='Weather_data_per_zone')
     # Sun data
-    sun_data = pd.read_excel('Generated_Data_Model.xlsx', sheet_name='Sun_data')
+    sun_data = pd.read_excel('../Data/Generated_Data_Model.xlsx', sheet_name='Sun_data')
 
     energy_data["Timestamp"] = pd.to_datetime(energy_data["Timestamp"])
     weather_data["Timestamp"] = pd.to_datetime(weather_data["Timestamp"])
@@ -138,7 +138,7 @@ def main():
     merged = preprocess_merge(energy_data, weather_data, sun_data)
 
     # Save the merged dataset to a new csv file
-    merged.to_csv('merged_dataset.csv', index=False)
+    merged.to_csv('../Data/merged_dataset.csv', index=False)
 
 
 if __name__ == "__main__":
