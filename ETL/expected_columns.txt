@@ -1,0 +1,11 @@
+Expected columns for energy_train:
+Timestamp, Price
+
+Expected columns for energy_test:
+Timestamp
+
+Expected columns for weather_data:
+MaxTemp, MinTemp, UvIndex, Wind, Dew_point, Cloud_cover, Wind_speed, Pressure, Apparent_temp_max, Apparent_temp_min, Visibility, Humidity
+
+Expected columns for sun_data:
+Sunrise_time, Sunset_time, Solar_Noon, Day_length
