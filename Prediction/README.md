@@ -5,6 +5,7 @@ This folder contains the training pipeline, visualizations, and PDF reporting ut
 ## Files and purpose
 - [Prediction/prediction_model.py](Prediction/prediction_model.py): Train XGBoost, evaluate metrics, and save artifacts.
 - [Prediction/train_script.py](Prediction/train_script.py): One-click training + PDF report pipeline.
+- [Prediction/run_sample.py](Prediction/run_sample.py): Deterministic sample run using a fixed CSV.
 - [Prediction/visualize_predictions.ipynb](Prediction/visualize_predictions.ipynb): Visual analysis of predictions vs actuals, residuals, and feature importance.
 - [Prediction/report_generator.py](Prediction/report_generator.py): Generate a PDF report with metrics, features, and plots.
 - [Prediction/Models](Prediction/Models): Per-run model artifacts organized by model name and timestamp.
@@ -22,6 +23,9 @@ This folder contains the training pipeline, visualizations, and PDF reporting ut
 - save_predictions(timestamps, y_true, y_pred, output_path): Writes predictions CSV.
 - save_feature_importance(model, features, output_path): Saves feature importances to CSV.
 - train_and_save(project_root, model_name, test_size): Full training pipeline that returns the run folder.
+- train_and_save_from_dataframe(project_root, df, model_name, test_size): Same pipeline but uses a fixed dataframe (sample or custom).
+- prepare_features_for_inference(df, target_col): Feature prep for prediction inputs.
+- predict_prices(model, df, target_col): Predicts using the inference feature pipeline.
 - main(): Orchestrates the full training run and writes outputs in Prediction/.
 
 Outputs from prediction_model.py
@@ -78,11 +82,21 @@ Outputs from prediction_model.py
   - python Prediction/prediction_model.py
 - Full pipeline (train + report):
   - python Prediction/train_script.py
+- Deterministic sample run (fixed dataset):
+  - python Prediction/run_sample.py
 - Visuals:
   - Open Prediction/visualize_predictions.ipynb and run all cells
 - PDF report:
   - python Prediction/report_generator.py
   - Optional args: --run-dir, --preds, --metrics, --importance, --model-name, --metadata, --test-size
+
+## Tests
+- Run all tests from the repo root:
+  - python -m unittest discover -s Prediction/tests -p "test_*.py"
+
+## Fixed inputs for reproducibility
+- Sample dataset: [Prediction/sample_data/merged_sample.csv](Prediction/sample_data/merged_sample.csv)
+- The sample run writes outputs to Prediction/Models with a model name of xgboost_sample.
 
 ## Generalizing to other models
 - Save your model outputs into the same CSV/JSON formats:

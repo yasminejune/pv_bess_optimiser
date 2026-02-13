@@ -4,11 +4,14 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from xgboost import XGBRegressor
+
+if TYPE_CHECKING:
+	from xgboost import XGBRegressor
 
 
 def import_etl_module(project_root: Path):
@@ -67,6 +70,26 @@ def prepare_features(df: pd.DataFrame, target_col: str = "Price") -> tuple[pd.Da
 	return features, target
 
 
+def prepare_features_for_inference(df: pd.DataFrame, target_col: str = "Price") -> pd.DataFrame:
+	features = df.copy()
+	if target_col in features.columns:
+		features = features.drop(columns=[target_col])
+	if "Timestamp" in features.columns:
+		features = features.drop(columns=["Timestamp"])
+
+	numeric_cols = features.select_dtypes(include=["number", "bool"]).columns
+	features = features[numeric_cols].copy()
+	for col in features.columns:
+		if features[col].dtype == "bool":
+			features[col] = features[col].astype(int)
+
+	for col in features.columns:
+		if features[col].isna().any():
+			features[col] = features[col].fillna(features[col].median())
+
+	return features
+
+
 def time_based_split(
 	features: pd.DataFrame, target: pd.Series, test_size: float = 0.2
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
@@ -84,7 +107,9 @@ def train_xgb_regressor(
 	x_train: pd.DataFrame,
 	y_train: pd.Series,
 	random_state: int = 42,
-) -> XGBRegressor:
+) -> "XGBRegressor":
+	from xgboost import XGBRegressor
+
 	model = XGBRegressor(
 		n_estimators=500,
 		learning_rate=0.05,
@@ -99,9 +124,7 @@ def train_xgb_regressor(
 	return model
 
 
-def evaluate_model(
-	model: XGBRegressor, x_test: pd.DataFrame, y_test: pd.Series
-) -> dict[str, float]:
+def evaluate_model(model: Any, x_test: pd.DataFrame, y_test: pd.Series) -> dict[str, float]:
 	preds = model.predict(x_test)
 	return {
 		"mae": float(mean_absolute_error(y_test, preds)),
@@ -127,7 +150,7 @@ def save_predictions(
 	output.to_csv(output_path, index=False)
 
 
-def save_feature_importance(model: XGBRegressor, features: pd.DataFrame, output_path: Path) -> None:
+def save_feature_importance(model: Any, features: pd.DataFrame, output_path: Path) -> None:
 	importance = model.feature_importances_
 	table = (
 		pd.DataFrame({"feature": features.columns, "importance": importance})
@@ -156,8 +179,17 @@ def create_model_run_dir(project_root: Path, model_name: str) -> Path:
 		index += 1
 
 
-def train_and_save(project_root: Path, model_name: str = "xgboost", test_size: float = 0.2) -> Path:
-	df = build_merged_dataset(project_root)
+def predict_prices(model: Any, df: pd.DataFrame, target_col: str = "Price") -> np.ndarray:
+	features = prepare_features_for_inference(df, target_col=target_col)
+	return model.predict(features)
+
+
+def train_and_save_from_dataframe(
+	project_root: Path,
+	df: pd.DataFrame,
+	model_name: str = "xgboost",
+	test_size: float = 0.2,
+) -> Path:
 
 	features, target = prepare_features(df, target_col="Price")
 	x_train, x_test, y_train, y_test = time_based_split(features, target, test_size=test_size)
@@ -193,6 +225,11 @@ def train_and_save(project_root: Path, model_name: str = "xgboost", test_size: f
 	print("Metrics:", metrics)
 
 	return run_dir
+
+
+def train_and_save(project_root: Path, model_name: str = "xgboost", test_size: float = 0.2) -> Path:
+	df = build_merged_dataset(project_root)
+	return train_and_save_from_dataframe(project_root, df, model_name=model_name, test_size=test_size)
 
 
 def main() -> None:
