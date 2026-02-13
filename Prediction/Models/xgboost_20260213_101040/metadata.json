@@ -1,0 +1,7 @@
+{
+  "model_name": "xgboost",
+  "run_timestamp": "2026-02-13T10:10:40",
+  "test_size": 0.2,
+  "row_count": 17568,
+  "feature_count": 28
+}
