@@ -1,4 +1,3 @@
-
 # BESS Intraday Optimizer
 ## Δt = 15 minutes · 6h Energy Capacity · Max 3 Cycles per Day
 
@@ -190,3 +189,36 @@ For each day D:
 - No ramp-rate limits  
 - No degradation cost (only cycle count)  
 - No thermal derating or forced outages  
+
+---
+
+## Platform prerequisites and installation notes
+
+This project is intended to run on Windows, macOS, and Linux. A few external/tooling prerequisites are platform-specific — follow the steps below for a smooth install.
+
+
+If you prefer pip, prefer pip installing wheels in a virtualenv:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate    # macOS / Linux
+# .venv\Scripts\Activate     # Windows (PowerShell: .\.venv\Scripts\Activate.ps1)
+
+pip install --upgrade pip
+pip install -e .[dev,ml]    # avoid `solvers` unless you installed system solvers (see below)
+```
+
+Solver notes (important) - Read the following only if the above is insufficient in satisfying all dependencies. 
+- GLPK (default solver in `pyproject.toml`): the pyomo `glpk` backend expects the GLPK executable (`glpsol`) on PATH.
+  - macOS (Homebrew): `brew install glpk`
+  - Debian/Ubuntu: `sudo apt-get update && sudo apt-get install -y glpk-utils libglpk-dev`
+  - Windows: install via conda (`conda install -c conda-forge glpk`) or download a prebuilt binary and add it to PATH. Using WSL is an alternate route.
+- HiGHS (`highspy`): available as wheels on many platforms; prefer conda-forge if pip wheel is unavailable.
+- NEOS solver manager: the project defaults to `neos` in `pyproject.toml`. NEOS requires network access; if you are offline or behind a firewall, change `solver_manager` to `local` and configure a local solver.
+
+Troubleshooting tips
+- If pip build fails for `numpy`/`pandas`/`highspy`, install prebuilt packages via conda or use a Python version with available wheels (e.g., 3.10–3.12).
+- To avoid the `glpk` executable requirement, change the default solver in your runtime (or in `pyproject.toml`) to a solver you have installed locally.
+
+Packaging note
+- The `all` extra previously referenced an undefined `ors` extra; this has been removed. Use `pip install -e .[all]` after installing any required system solvers, or install extras selectively (e.g., `pip install -e .[dev,ml]`).
