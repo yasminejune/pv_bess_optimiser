@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^Get-Content -Path ETL/ETL\\.py \\| ForEach-Object -Begin \\{\\$i=1\\} -Process \\{\"\\$i`t\\$_\"; \\$i\\+\\+\\}$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

@@ -44,13 +44,14 @@ def load_source_data(project_root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd
         raise FileNotFoundError("Generated_Data_Model.xlsx not found in Data/.")
 
     energy_data = pd.read_excel(data_path, sheet_name="Energy_data")
-    weather_data = pd.read_excel(data_path, sheet_name="Weather_data_per_zone")
-    sun_data = pd.read_excel(data_path, sheet_name="Sun_data")
+    weather_data = pd.read_excel(data_path, sheet_name="Weather_data")
+    sun_data = pd.read_excel(data_path, sheet_name="Daily_weather")
 
     energy_data["Timestamp"] = pd.to_datetime(energy_data["Timestamp"])
+    weather_data = weather_data.rename(columns={"timestamp_utc": "Timestamp"})
+    sun_data = sun_data.rename(columns={"date_utc": "Timestamp"})
     weather_data["Timestamp"] = pd.to_datetime(weather_data["Timestamp"])
-    sun_data["Timestamp"] = pd.to_datetime(sun_data["Day"])
-    sun_data = sun_data.drop(columns=["Day"])
+    sun_data["Timestamp"] = pd.to_datetime(sun_data["Timestamp"])
 
     return energy_data, weather_data, sun_data
 

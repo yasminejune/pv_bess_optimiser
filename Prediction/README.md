@@ -13,7 +13,7 @@ This folder contains the training pipeline, visualizations, and PDF reporting ut
 
 ## prediction_model.py functions
 - import_etl_module(project_root): Adds ETL/ to sys.path and imports ETL as a module.
-- load_source_data(project_root): Loads Energy_data, Weather_data_per_zone, and Sun_data from Data/Generated_Data_Model.xlsx and parses timestamps.
+- load_source_data(project_root): Loads Energy_data, Weather_data, and Daily_weather from Data/Generated_Data_Model.xlsx and parses timestamps.
 - build_merged_dataset(project_root): Runs ETL.preprocess_merge and returns a sorted merged dataset.
 - prepare_features(df, target_col): Drops target and Timestamp, keeps numeric/bool features, casts bool to int, fills missing values with median.
 - time_based_split(features, target, test_size): Splits data in time order to avoid leakage.

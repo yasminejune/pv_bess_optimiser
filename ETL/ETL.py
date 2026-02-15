@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from pathlib import Path
 
 # Extract
 
@@ -59,12 +60,14 @@ def transform_weather_data(weather_data):
 def transform_sun_data(sun_data):
     # Transform to hourly data by forward filling the values for each hour
     sun_data = sun_data.set_index('Timestamp').resample('h').ffill().reset_index()
-    solar_noon_time = pd.to_datetime(sun_data['Solar_Noon'].astype(str)).dt.time
-    solar_noon_dt = pd.to_datetime(sun_data['Timestamp'].dt.date.astype(str) + ' ' + solar_noon_time.astype(str))
+    sunrise = pd.to_datetime(sun_data['sunrise'], errors='coerce').dt.tz_localize(None)
+    day_length_hours = sun_data['daylight_duration'] / 3600.0
+    safe_day_length = day_length_hours.replace(0, np.nan)
+    solar_noon_dt = sunrise + pd.to_timedelta(day_length_hours / 2, unit='h')
     hours = (sun_data['Timestamp'] - solar_noon_dt) / np.timedelta64(1, 'h')
-    sun_data["Solar_intensity"] = np.maximum(0, np.cos(hours * np.pi / sun_data['Day_length']))
-    sun_data.drop(columns=['Sunrise_time', 'Sunset_time', 'Solar_Noon', 'Day_length'], inplace=True)
-    
+    sun_data["Solar_intensity"] = np.maximum(0, np.cos(hours * np.pi / safe_day_length)).fillna(0.0)
+    sun_data.drop(columns=['sunrise', 'sunset', 'daylight_duration'], inplace=True)
+
     return sun_data
 
 def merge_datasets(energy_data, weather_data, sun_data, time_data):
@@ -84,35 +87,25 @@ def preprocess_merge(energy_data, weather_data, sun_data):
     return merged_data
 
 def main():
+    base_dir = Path(__file__).resolve().parent
+    data_path = base_dir / ".." / "Data" / "Generated_Data_Model.xlsx"
     # Energy data
-    energy_data = pd.read_excel('../Data/Generated_Data_Model.xlsx', sheet_name='Energy_data')
+    energy_data = pd.read_excel(data_path, sheet_name='Energy_data')
     # Weather data
-    weather_data = pd.read_excel('../Data/Generated_Data_Model.xlsx', sheet_name='Weather_data_per_zone')
-    # Sun data
-    sun_data = pd.read_excel('../Data/Generated_Data_Model.xlsx', sheet_name='Sun_data')
+    weather_data = pd.read_excel(data_path, sheet_name='Weather_data')
+    # Daily weather data (sun-related fields)
+    sun_data = pd.read_excel(data_path, sheet_name='Daily_weather')
 
     energy_data["Timestamp"] = pd.to_datetime(energy_data["Timestamp"])
+    weather_data.rename(columns={"timestamp_utc": "Timestamp"}, inplace=True)
+    sun_data.rename(columns={"date_utc": "Timestamp"}, inplace=True)
     weather_data["Timestamp"] = pd.to_datetime(weather_data["Timestamp"])
-    sun_data["Timestamp"] = pd.to_datetime(sun_data["Day"])
-    sun_data.drop(columns=["Day"], inplace=True)
+    sun_data["Timestamp"] = pd.to_datetime(sun_data["Timestamp"])
 
-    expected_columns_energy_train = ['Timestamp', 'Price']
+    expected_columns_energy_train = energy_data.columns.tolist()
     expected_columns_energy_test = ['Timestamp']
-    expected_columns_weather = [
-        "MaxTemp",
-        "MinTemp",
-        "UvIndex",
-        "Wind",
-        "Dew_point",
-        "Cloud_cover",
-        "Wind_speed",
-        "Pressure",
-        "Apparent_temp_max",
-        "Apparent_temp_min",
-        "Visibility",
-        "Humidity",
-    ]
-    sun_data_columns = ["Sunrise_time", "Sunset_time", "Solar_Noon", "Day_length"]
+    expected_columns_weather = weather_data.columns.tolist()
+    sun_data_columns = sun_data.columns.tolist()
 
     # Save expected columns to a .txt file
     with open('expected_columns.txt', 'w') as f:
@@ -138,7 +131,7 @@ def main():
     merged = preprocess_merge(energy_data, weather_data, sun_data)
 
     # Save the merged dataset to a new csv file
-    merged.to_csv('../Data/merged_dataset.csv', index=False)
+    merged.to_csv(base_dir / ".." / "Data" / "merged_dataset.csv", index=False)
 
 
 if __name__ == "__main__":
