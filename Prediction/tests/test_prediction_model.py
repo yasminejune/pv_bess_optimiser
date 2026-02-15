@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from prediction_model import prepare_features, predict_prices, time_based_split
+from Prediction.prediction_model import prepare_features, predict_prices, time_based_split
 
 
 class DummyModel:

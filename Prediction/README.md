@@ -1,20 +1,20 @@
 # Prediction folder overview
 
-This folder contains the training pipeline, visualizations, and PDF reporting utilities for the price prediction workflow. It assumes the ETL pipeline builds a merged dataset from the Excel source in Data/.
+This folder contains the training pipeline, visualizations, and PDF reporting utilities for the price prediction workflow. It assumes the ETL pipeline builds a merged dataset from the CSV sources in Data/.
 
 ## Files and purpose
 - [Prediction/prediction_model.py](Prediction/prediction_model.py): Train XGBoost, evaluate metrics, and save artifacts.
 - [Prediction/train_script.py](Prediction/train_script.py): One-click training + PDF report pipeline.
 - [Prediction/run_sample.py](Prediction/run_sample.py): Deterministic sample run using a fixed CSV.
+- [Prediction/data_pipeline.py](Prediction/data_pipeline.py): Shared data loading + merged dataset builder.
 - [Prediction/visualize_predictions.ipynb](Prediction/visualize_predictions.ipynb): Visual analysis of predictions vs actuals, residuals, and feature importance.
 - [Prediction/report_generator.py](Prediction/report_generator.py): Generate a PDF report with metrics, features, and plots.
 - [Prediction/Models](Prediction/Models): Per-run model artifacts organized by model name and timestamp.
 - [Prediction/Visualization](Prediction/Visualization): Saved figures from the notebook.
 
 ## prediction_model.py functions
-- import_etl_module(project_root): Adds ETL/ to sys.path and imports ETL as a module.
-- load_source_data(project_root): Loads Energy_data, Weather_data, and Daily_weather from Data/Generated_Data_Model.xlsx and parses timestamps.
-- build_merged_dataset(project_root): Runs ETL.preprocess_merge and returns a sorted merged dataset.
+- resolve_target_column(df, target_col): Resolves Price/price/target_price columns for training and reporting.
+- build_merged_dataset(project_root): Uses ETL.preprocess_merge with CSV sources (price, hourly weather, daily sun).
 - prepare_features(df, target_col): Drops target and Timestamp, keeps numeric/bool features, casts bool to int, fills missing values with median.
 - time_based_split(features, target, test_size): Splits data in time order to avoid leakage.
 - train_xgb_regressor(x_train, y_train, random_state): Trains an XGBoost regressor with fixed hyperparameters.
@@ -46,9 +46,7 @@ Outputs from prediction_model.py
 
 ## report_generator.py functions
 - find_project_root(start): Finds the project root by looking for ETL/.
-- import_etl_module(project_root): Imports the ETL module.
-- load_source_data(project_root): Loads input Excel sheets and parses timestamps.
-- build_merged_dataset(project_root): Builds merged dataset using ETL.preprocess_merge.
+- build_merged_dataset(project_root): Builds merged dataset using ETL.preprocess_merge and CSV sources.
 - prepare_features(df, target_col): Same feature preparation as training.
 - time_based_split(features, target, test_size): Time-based split.
 - load_metrics(metrics_path): Loads metrics JSON into a dict.
@@ -73,21 +71,21 @@ Outputs from prediction_model.py
 - Timestamp changes:
   - Ensure Timestamp exists and is parseable in all input sheets and merged output.
 - New data source file or sheet names:
-  - Update load_source_data in prediction_model.py and report_generator.py.
+  - Update data_pipeline.py where CSVs are loaded.
 - Custom preprocessing or encodings:
   - Adjust prepare_features and update the report encoding notes in report_generator.py.
 
 ## How to run
 - Training:
-  - python Prediction/prediction_model.py
-- Full pipeline (train + report):
-  - python Prediction/train_script.py
+  - python -m Prediction.prediction_model
+- Full pipeline (merge + train + report):
+  - python -m Prediction.train_script
 - Deterministic sample run (fixed dataset):
-  - python Prediction/run_sample.py
+  - python -m Prediction.run_sample
 - Visuals:
   - Open Prediction/visualize_predictions.ipynb and run all cells
 - PDF report:
-  - python Prediction/report_generator.py
+  - python -m Prediction.report_generator
   - Optional args: --run-dir, --preds, --metrics, --importance, --model-name, --metadata, --test-size
 
 ## Tests
@@ -97,6 +95,13 @@ Outputs from prediction_model.py
 ## Fixed inputs for reproducibility
 - Sample dataset: [Prediction/sample_data/merged_sample.csv](Prediction/sample_data/merged_sample.csv)
 - The sample run writes outputs to Prediction/Models with a model name of xgboost_sample.
+
+## Data sources
+- Data/price_data.csv
+- Data/historical_hourly_2025.csv
+- Data/historical_daily_2025.csv
+
+The merged dataset is built once in train_script.py and passed through training and reporting so the pipeline can run end-to-end in a single command.
 
 ## Generalizing to other models
 - Save your model outputs into the same CSV/JSON formats:

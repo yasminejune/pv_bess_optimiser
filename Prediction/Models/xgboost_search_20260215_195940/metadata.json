@@ -1,0 +1,17 @@
+{
+  "model_name": "xgboost_search",
+  "score_metric": "mape",
+  "best_score_value": 117.91256134614274,
+  "best_params": {
+    "colsample_bytree": 1.0,
+    "learning_rate": 0.07,
+    "max_depth": 6,
+    "min_child_weight": 5,
+    "n_estimators": 500,
+    "subsample": 0.8
+  },
+  "test_size": 0.2,
+  "row_count": 8737,
+  "feature_count": 45,
+  "search_trials": 96
+}

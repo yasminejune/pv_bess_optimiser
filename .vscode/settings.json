@@ -3,6 +3,10 @@
         "/^Get-Content -Path ETL/ETL\\.py \\| ForEach-Object -Begin \\{\\$i=1\\} -Process \\{\"\\$i`t\\$_\"; \\$i\\+\\+\\}$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "/^C:/Users/rkale/OneDrive/Documentos/VStudio/GitHub/Gitlab/GroupProject/25-26_CE903-SP_team03/\\.venv/Scripts/python\\.exe -c \"import pandas as pd; df=pd\\.read_csv\\(r'c:/Users/rkale/OneDrive/Documentos/VStudio/GitHub/Gitlab/GroupProject/25-26_CE903-SP_team03/Data/merged_dataset\\.csv'\\); ts=pd\\.to_datetime\\(df\\['Timestamp'\\], errors='coerce'\\)\\.dt\\.tz_localize\\(None\\); print\\('merged', ts\\.min\\(\\), ts\\.max\\(\\), len\\(df\\)\\)\"$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     }
 }

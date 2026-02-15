@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+
+from .data_pipeline import build_merged_dataset
+from .prediction_model import prepare_features, resolve_target_column, time_based_split
 
 
 def find_project_root(start: Path) -> Path:
@@ -28,74 +29,6 @@ def find_latest_run_dir(models_dir: Path) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def import_etl_module(project_root: Path):
-    etl_dir = project_root / "ETL"
-    if not etl_dir.exists():
-        raise FileNotFoundError("ETL folder not found at project root.")
-    sys.path.insert(0, str(etl_dir))
-    import ETL as etl
-
-    return etl
-
-
-def load_source_data(project_root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    data_path = project_root / "Data" / "Generated_Data_Model.xlsx"
-    if not data_path.exists():
-        raise FileNotFoundError("Generated_Data_Model.xlsx not found in Data/.")
-
-    energy_data = pd.read_excel(data_path, sheet_name="Energy_data")
-    weather_data = pd.read_excel(data_path, sheet_name="Weather_data")
-    sun_data = pd.read_excel(data_path, sheet_name="Daily_weather")
-
-    energy_data["Timestamp"] = pd.to_datetime(energy_data["Timestamp"])
-    weather_data = weather_data.rename(columns={"timestamp_utc": "Timestamp"})
-    sun_data = sun_data.rename(columns={"date_utc": "Timestamp"})
-    weather_data["Timestamp"] = pd.to_datetime(weather_data["Timestamp"])
-    sun_data["Timestamp"] = pd.to_datetime(sun_data["Timestamp"])
-
-    return energy_data, weather_data, sun_data
-
-
-def build_merged_dataset(project_root: Path) -> pd.DataFrame:
-    etl = import_etl_module(project_root)
-    energy_data, weather_data, sun_data = load_source_data(project_root)
-    merged = etl.preprocess_merge(energy_data, weather_data, sun_data)
-    return merged.sort_values("Timestamp").reset_index(drop=True)
-
-
-def prepare_features(df: pd.DataFrame, target_col: str = "Price") -> tuple[pd.DataFrame, pd.Series]:
-    if target_col not in df.columns:
-        raise ValueError(f"Target column '{target_col}' not found in merged dataset.")
-
-    features = df.drop(columns=[target_col])
-    if "Timestamp" in features.columns:
-        features = features.drop(columns=["Timestamp"])
-
-    numeric_cols = features.select_dtypes(include=["number", "bool"]).columns
-    features = features[numeric_cols].copy()
-    for col in features.columns:
-        if features[col].dtype == "bool":
-            features[col] = features[col].astype(int)
-
-    for col in features.columns:
-        if features[col].isna().any():
-            features[col] = features[col].fillna(features[col].median())
-
-    target = df[target_col].astype(float)
-    return features, target
-
-
-def time_based_split(
-    features: pd.DataFrame, target: pd.Series, test_size: float = 0.2
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
-    if not 0.0 < test_size < 1.0:
-        raise ValueError("test_size must be between 0 and 1.")
-    split_idx = int(len(features) * (1 - test_size))
-    x_train = features.iloc[:split_idx]
-    x_test = features.iloc[split_idx:]
-    y_train = target.iloc[:split_idx]
-    y_test = target.iloc[split_idx:]
-    return x_train, x_test, y_train, y_test
 
 
 def load_metrics(metrics_path: Path) -> dict[str, float]:
@@ -210,19 +143,24 @@ def build_report(
     model_metadata_path: Path | None,
     test_size: float,
     model_name: str,
+    target_col: str = "Price",
+    merged_df: pd.DataFrame | None = None,
 ) -> None:
     preds = pd.read_csv(preds_path, parse_dates=["Timestamp"])
     metrics = load_metrics(metrics_path)
     importance_df = load_feature_importance(importance_path)
     metadata = load_model_metadata(model_metadata_path)
 
-    merged_df = build_merged_dataset(project_root)
-    features, target = prepare_features(merged_df, target_col="Price")
+    if merged_df is None:
+        merged_df = build_merged_dataset(project_root)
+
+    resolved_target = resolve_target_column(merged_df, target_col)
+    features, target = prepare_features(merged_df, target_col=resolved_target)
     x_train, x_test, y_train, y_test = time_based_split(features, target, test_size=test_size)
     split_idx = len(x_train)
 
-    test_df = merged_df.iloc[split_idx:][["Timestamp", "Price"]].copy()
-    test_df = test_df.rename(columns={"Price": "Price_true"}).reset_index(drop=True)
+    test_df = merged_df.iloc[split_idx:][["Timestamp", resolved_target]].copy()
+    test_df = test_df.rename(columns={resolved_target: "Price_true"}).reset_index(drop=True)
 
     if "Price_true" in preds.columns:
         analysis_df = preds.copy()
@@ -246,13 +184,24 @@ def build_report(
         f"Time range: {merged_df['Timestamp'].min()} to {merged_df['Timestamp'].max()}",
     ]
 
+    if metrics:
+        report_lines.append(" ")
+        report_lines.append("Key metrics:")
+        for key in ["mae", "rmse", "mape", "r2"]:
+            if key in metrics:
+                report_lines.append(f"- {key}: {metrics[key]:.4f}")
+
     if metadata:
         report_lines.append(" ")
         report_lines.append("Model metadata:")
         for key, value in metadata.items():
             report_lines.append(f"- {key}: {value}")
 
-    metrics_df = pd.DataFrame([metrics]) if metrics else pd.DataFrame(columns=["mae", "rmse", "r2"])
+    metrics_df = (
+        pd.DataFrame([metrics])
+        if metrics
+        else pd.DataFrame(columns=["mae", "rmse", "mape", "r2"])
+    )
     features_df = pd.DataFrame(
         {
             "feature": list(features.columns),

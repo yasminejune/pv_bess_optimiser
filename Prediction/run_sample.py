@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from prediction_model import train_and_save_from_dataframe
+from .prediction_model import train_and_save_from_dataframe
 
 
 def main() -> None:

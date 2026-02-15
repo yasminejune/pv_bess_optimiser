@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -10,50 +9,25 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
+from .data_pipeline import build_merged_dataset
+
 if TYPE_CHECKING:
 	from xgboost import XGBRegressor
 
 
-def import_etl_module(project_root: Path):
-	etl_dir = project_root / "ETL"
-	if not etl_dir.exists():
-		raise FileNotFoundError("ETL folder not found at project root.")
-	sys.path.insert(0, str(etl_dir))
-	import ETL as etl
-
-	return etl
-
-
-def load_source_data(project_root: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-	data_path = project_root / "Data" / "Generated_Data_Model.xlsx"
-	if not data_path.exists():
-		raise FileNotFoundError("Generated_Data_Model.xlsx not found in Data/.")
-
-	energy_data = pd.read_excel(data_path, sheet_name="Energy_data")
-	weather_data = pd.read_excel(data_path, sheet_name="Weather_data")
-	sun_data = pd.read_excel(data_path, sheet_name="Daily_weather")
-
-	energy_data["Timestamp"] = pd.to_datetime(energy_data["Timestamp"])
-	weather_data = weather_data.rename(columns={"timestamp_utc": "Timestamp"})
-	sun_data = sun_data.rename(columns={"date_utc": "Timestamp"})
-	weather_data["Timestamp"] = pd.to_datetime(weather_data["Timestamp"])
-	sun_data["Timestamp"] = pd.to_datetime(sun_data["Timestamp"])
-
-	return energy_data, weather_data, sun_data
-
-
-def build_merged_dataset(project_root: Path) -> pd.DataFrame:
-	etl = import_etl_module(project_root)
-	energy_data, weather_data, sun_data = load_source_data(project_root)
-	merged = etl.preprocess_merge(energy_data, weather_data, sun_data)
-	return merged.sort_values("Timestamp").reset_index(drop=True)
+def resolve_target_column(df: pd.DataFrame, target_col: str) -> str:
+	if target_col in df.columns:
+		return target_col
+	for candidate in ["price", "target_price", "Price"]:
+		if candidate in df.columns:
+			return candidate
+	raise ValueError(f"Target column '{target_col}' not found in merged dataset.")
 
 
 def prepare_features(df: pd.DataFrame, target_col: str = "Price") -> tuple[pd.DataFrame, pd.Series]:
-	if target_col not in df.columns:
-		raise ValueError(f"Target column '{target_col}' not found in merged dataset.")
+	resolved_target = resolve_target_column(df, target_col)
 
-	features = df.drop(columns=[target_col])
+	features = df.drop(columns=[resolved_target])
 	if "Timestamp" in features.columns:
 		features = features.drop(columns=["Timestamp"])
 
@@ -67,14 +41,19 @@ def prepare_features(df: pd.DataFrame, target_col: str = "Price") -> tuple[pd.Da
 		if features[col].isna().any():
 			features[col] = features[col].fillna(features[col].median())
 
-	target = df[target_col].astype(float)
+	target = df[resolved_target].astype(float)
 	return features, target
 
 
 def prepare_features_for_inference(df: pd.DataFrame, target_col: str = "Price") -> pd.DataFrame:
+	resolved_target = None
+	for candidate in [target_col, "price", "target_price", "Price"]:
+		if candidate in df.columns:
+			resolved_target = candidate
+			break
 	features = df.copy()
-	if target_col in features.columns:
-		features = features.drop(columns=[target_col])
+	if resolved_target is not None:
+		features = features.drop(columns=[resolved_target])
 	if "Timestamp" in features.columns:
 		features = features.drop(columns=["Timestamp"])
 
@@ -108,28 +87,38 @@ def train_xgb_regressor(
 	x_train: pd.DataFrame,
 	y_train: pd.Series,
 	random_state: int = 42,
+	params: dict[str, Any] | None = None,
 ) -> "XGBRegressor":
 	from xgboost import XGBRegressor
 
-	model = XGBRegressor(
-		n_estimators=500,
-		learning_rate=0.05,
-		max_depth=6,
-		subsample=0.9,
-		colsample_bytree=0.9,
-		objective="reg:squarederror",
-		random_state=random_state,
-		n_jobs=4,
-	)
+	base_params = {
+		"n_estimators": 500,
+		"learning_rate": 0.05,
+		"max_depth": 6,
+		"subsample": 0.9,
+		"colsample_bytree": 0.9,
+		"objective": "reg:squarederror",
+		"random_state": random_state,
+		"n_jobs": 4,
+	}
+	if params:
+		base_params.update(params)
+		base_params["random_state"] = random_state
+
+	model = XGBRegressor(**base_params)
 	model.fit(x_train, y_train)
 	return model
 
 
 def evaluate_model(model: Any, x_test: pd.DataFrame, y_test: pd.Series) -> dict[str, float]:
 	preds = model.predict(x_test)
+	safe_denom = np.where(np.abs(y_test) < 1e-8, np.nan, y_test)
+	raw_mape = float(np.nanmean(np.abs((y_test - preds) / safe_denom)) * 100)
+	mape = raw_mape if not np.isnan(raw_mape) else float("inf")
 	return {
 		"mae": float(mean_absolute_error(y_test, preds)),
 		"rmse": float(mean_squared_error(y_test, preds, squared=False)),
+		"mape": mape,
 		"r2": float(r2_score(y_test, preds)),
 	}
 

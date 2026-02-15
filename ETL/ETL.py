@@ -4,6 +4,16 @@ from pathlib import Path
 
 # Extract
 
+def standardize_timestamp_column(dataframe, candidates, target_column="Timestamp"):
+    timestamp_col = next((col for col in candidates if col in dataframe.columns), None)
+    if timestamp_col is None:
+        raise ValueError(f"Missing timestamp column. Tried: {', '.join(candidates)}")
+    if timestamp_col != target_column:
+        dataframe.rename(columns={timestamp_col: target_column}, inplace=True)
+    dataframe[target_column] = pd.to_datetime(dataframe[target_column], errors='coerce')
+    dataframe[target_column] = dataframe[target_column].dt.tz_localize(None)
+    return dataframe
+
 
 # Time data
 def generate_time_data(start_date, end_date, country_holidays):
@@ -70,65 +80,108 @@ def transform_sun_data(sun_data):
 
     return sun_data
 
-def merge_datasets(energy_data, weather_data, sun_data, time_data):
+def transform_price_data(price_data):
+    columns_to_drop = [
+        col for col in ['hour', 'dayofweek', 'month', 'is_weekend']
+        if col in price_data.columns
+    ]
+    if columns_to_drop:
+        price_data = price_data.drop(columns=columns_to_drop)
+
+    numeric_cols = price_data.select_dtypes(include='number').columns
+    non_numeric_cols = [col for col in price_data.columns if col not in numeric_cols and col != 'Timestamp']
+    aggregated = price_data.set_index('Timestamp').resample('h').agg(
+        {**{col: 'mean' for col in numeric_cols}, **{col: 'first' for col in non_numeric_cols}}
+    )
+    return aggregated.reset_index()
+
+def get_timestamp_range(dataframe):
+    timestamps = pd.to_datetime(dataframe['Timestamp'], errors='coerce')
+    return timestamps.min(), timestamps.max()
+
+def filter_by_timestamp_range(dataframe, start_date, end_date):
+    mask = (dataframe['Timestamp'] >= start_date) & (dataframe['Timestamp'] <= end_date)
+    return dataframe.loc[mask].copy()
+
+def log_dataset_ranges(ranges_by_name):
+    print("Timestamp ranges used for merge:")
+    for name, (start_date, end_date) in ranges_by_name.items():
+        print(f"- {name}: {start_date} to {end_date}")
+
+def merge_datasets(price_data, weather_data, sun_data, time_data):
     # Merge on Timestamp
-    merged_data = energy_data.merge(weather_data, on='Timestamp', how='left')
+    merged_data = price_data.merge(weather_data, on='Timestamp', how='left')
     merged_data = merged_data.merge(sun_data, on='Timestamp', how='left')
     merged_data = merged_data.merge(time_data, on='Timestamp', how='left')
     
     return merged_data
 
-def preprocess_merge(energy_data, weather_data, sun_data):
-    time_data = generate_time_data(start_date=energy_data['Timestamp'].min(), end_date=energy_data['Timestamp'].max(), country_holidays='UK')
+def preprocess_merge(price_data, weather_data, sun_data):
+    price_range = get_timestamp_range(price_data)
+    weather_range = get_timestamp_range(weather_data)
+    sun_range = get_timestamp_range(sun_data)
+    log_dataset_ranges(
+        {
+            "price_data": price_range,
+            "historical_hourly": weather_range,
+            "historical_daily": sun_range,
+        }
+    )
+
+    start_date = max(price_range[0], weather_range[0], sun_range[0])
+    end_date = min(price_range[1], weather_range[1], sun_range[1])
+    if pd.isna(start_date) or pd.isna(end_date):
+        raise ValueError("Invalid timestamp range detected; check input data for missing timestamps.")
+    if start_date > end_date:
+        raise ValueError("No overlapping timestamp range across datasets.")
+
+    price_data = filter_by_timestamp_range(price_data, start_date, end_date)
+    weather_data = filter_by_timestamp_range(weather_data, start_date, end_date)
+    sun_data = filter_by_timestamp_range(sun_data, start_date, end_date)
+
+    time_data = generate_time_data(
+        start_date=start_date,
+        end_date=end_date,
+        country_holidays='UK'
+    )
     time_data = transform_time_data(time_data)
     weather_data = transform_weather_data(weather_data) 
     sun_data = transform_sun_data(sun_data) 
-    merged_data = merge_datasets(energy_data, weather_data, sun_data, time_data) 
+    price_data = transform_price_data(price_data)
+    merged_data = merge_datasets(price_data, weather_data, sun_data, time_data) 
     return merged_data
 
 def main():
     base_dir = Path(__file__).resolve().parent
-    data_path = base_dir / ".." / "Data" / "Generated_Data_Model.xlsx"
-    # Energy data
-    energy_data = pd.read_excel(data_path, sheet_name='Energy_data')
-    # Weather data
-    weather_data = pd.read_excel(data_path, sheet_name='Weather_data')
-    # Daily weather data (sun-related fields)
-    sun_data = pd.read_excel(data_path, sheet_name='Daily_weather')
+    data_dir = base_dir / ".." / "Data"
+    historical_daily_path = data_dir / "historical_daily_2025.csv"
+    historical_hourly_path = data_dir / "historical_hourly_2025.csv"
+    price_data_path = data_dir / "price_data.csv"
 
-    energy_data["Timestamp"] = pd.to_datetime(energy_data["Timestamp"])
-    weather_data.rename(columns={"timestamp_utc": "Timestamp"}, inplace=True)
-    sun_data.rename(columns={"date_utc": "Timestamp"}, inplace=True)
-    weather_data["Timestamp"] = pd.to_datetime(weather_data["Timestamp"])
-    sun_data["Timestamp"] = pd.to_datetime(sun_data["Timestamp"])
+    price_data = pd.read_csv(price_data_path)
+    weather_data = pd.read_csv(historical_hourly_path)
+    sun_data = pd.read_csv(historical_daily_path)
 
-    expected_columns_energy_train = energy_data.columns.tolist()
-    expected_columns_energy_test = ['Timestamp']
+    price_data = standardize_timestamp_column(price_data, ['timestamp', 'ts_utc', 'Timestamp'])
+    weather_data = standardize_timestamp_column(weather_data, ['timestamp_utc', 'Timestamp'])
+    sun_data = standardize_timestamp_column(sun_data, ['date_utc', 'Timestamp'])
+
+    expected_columns_price_data = price_data.columns.tolist()
     expected_columns_weather = weather_data.columns.tolist()
-    sun_data_columns = sun_data.columns.tolist()
+    expected_columns_sun = sun_data.columns.tolist()
 
     # Save expected columns to a .txt file
     with open('expected_columns.txt', 'w') as f:
-        f.write("Expected columns for energy_train:\n")
-        f.write(", ".join(expected_columns_energy_train) + "\n\n")
+        f.write("Expected columns for price_data:\n")
+        f.write(", ".join(expected_columns_price_data) + "\n\n")
 
-        f.write("Expected columns for energy_test:\n")
-        f.write(", ".join(expected_columns_energy_test) + "\n\n")
-
-        f.write("Expected columns for weather_data:\n")
+        f.write("Expected columns for historical_hourly:\n")
         f.write(", ".join(expected_columns_weather) + "\n\n")
 
-        f.write("Expected columns for sun_data:\n")
-        f.write(", ".join(sun_data_columns) + "\n")
+        f.write("Expected columns for historical_daily:\n")
+        f.write(", ".join(expected_columns_sun) + "\n")
 
-    with open('expected_columns.txt', 'r') as f:
-        contents = f.read()
-        expected_columns_energy_train = contents.split("Expected columns for energy_train:\n")[1].split("\n\n")[0].split(", ")
-        expected_columns_energy_test = contents.split("Expected columns for energy_test:\n")[1].split("\n\n")[0].split(", ")
-        expected_columns_weather = contents.split("Expected columns for weather_data:\n")[1].split("\n\n")[0].split(", ")
-        sun_data_columns = contents.split("Expected columns for sun_data:\n")[1].split("\n\n")[0].split(", ")
-
-    merged = preprocess_merge(energy_data, weather_data, sun_data)
+    merged = preprocess_merge(price_data, weather_data, sun_data)
 
     # Save the merged dataset to a new csv file
     merged.to_csv(base_dir / ".." / "Data" / "merged_dataset.csv", index=False)

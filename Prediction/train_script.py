@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from report_generator import build_report, find_project_root
-from prediction_model import train_and_save
+from .data_pipeline import build_merged_dataset
+from .report_generator import build_report, find_project_root
+from .prediction_model import train_and_save_from_dataframe
 
 
 def parse_args() -> argparse.Namespace:
@@ -19,7 +20,13 @@ def main() -> None:
     args = parse_args()
     project_root = args.project_root or find_project_root(Path.cwd())
 
-    run_dir = train_and_save(project_root, model_name=args.model_name, test_size=args.test_size)
+    merged_df = build_merged_dataset(project_root)
+    run_dir = train_and_save_from_dataframe(
+        project_root=project_root,
+        df=merged_df,
+        model_name=args.model_name,
+        test_size=args.test_size,
+    )
 
     build_report(
         project_root=project_root,
@@ -30,6 +37,7 @@ def main() -> None:
         model_metadata_path=run_dir / "metadata.json",
         test_size=args.test_size,
         model_name=args.model_name,
+        merged_df=merged_df,
     )
 
     print("Pipeline completed. Report saved to:", run_dir / "model_report.pdf")
