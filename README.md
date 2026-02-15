@@ -1,185 +1,214 @@
+
 # BESS Intraday Optimizer
 ## Δt = 15 minutes · 6h Energy Capacity · Max 3 Cycles per Day
 
----
+# Weather API Ingest (Open-Meteo UKMO)
 
-## 0) Time structure
-- Time steps: t = 1, …, T  
-- Time resolution: 15 minutes  
-- Δt = 0.25 hours  
-- Days are defined as subsets of time steps (used for daily cycle limits)
+## Purpose
 
----
+This module fetches weather data from the Open-Meteo API (UK Met Office model) and parses it into clean, consistent schemas for downstream analytics and modelling.
 
-## 1) Inputs (given data)
-- p_t : intraday spot price at time t  
-- S_t ≥ 0 (MW): available solar power at time t  
+It supports:
 
----
+- Current conditions
+- Forecast hourly data
+- Forecast daily summaries
+- Historical hourly data (Archive API)
+- Historical daily summaries (Archive API)
 
-## 2) Fixed parameters (prototype)
+All outputs follow a consistent, structured schema suitable for machine learning training or statistical analysis.
 
-### Power & efficiency
-- Rated power: 100 MW  
-- Max charge power: P_ch_max = 100 MW  
-- Max discharge power: P_dis_max = 100 MW  
-- Charge efficiency: η_ch = 0.97  
-- Discharge efficiency: η_dis = 0.97  
-
-### Auxiliary losses
-- Aux load fraction: a = 0.5 % of rated power  
-- P_aux = a · P_rated = 0.005 · 100 = 0.5 MW  
-
-### Self-discharge
-- r_sd = 0.0005 per hour (0.05 % / h)
-
-### Energy capacity (6h duration)
-- E_cap = 100 MW × 6 h = 600 MWh  
-- E_min = 10 % · E_cap = 60 MWh  
-- E_max = 90 % · E_cap = 540 MWh  
-- Initial energy: E_0 = 300 MWh  
 
 ---
 
-## 3) Decision variables (controls)
+## Fixed Inputs (Deterministic Example)
 
-### Power decisions
-- P_grid_t ≥ 0 (MW): power purchased from grid to charge battery  
-- P_dis_t ≥ 0 (MW): power discharged and sold to grid  
+The script uses fixed parameters defined in `DEFAULT_PARAMS`:
 
-### Mode-selection binaries
-- z_sol_t ∈ {0,1}: solar → battery  
-- z_grid_t ∈ {0,1}: grid → battery  
-- z_dis_t ∈ {0,1}: battery → grid  
+- Latitude: 54.7584
+- Longitude: -2.6953
+- Model: ukmo_uk_deterministic_2km
+- Timezone: GMT
+- Forecast hours: 24
+- Past hours: 6
+- Forecast days: 1
 
-Idle occurs when all three binaries are zero.
+Historical example range:
 
----
+- Start date: 2025-01-01
+- End date: 2025-12-31
 
-## 4) State variables (not freely chosen)
-- E_t (MWh): energy stored in the battery at end of interval t  
+Hourly variables are defined in:
 
----
+DEFAULT_PARAMS["hourly"]
 
-## 5) Operating logic
+Daily variables are defined in:
 
-### 5.1 Mode exclusivity
-Only one action can occur per interval:
+DEFAULT_PARAMS["daily"]
 
-z_sol_t + z_grid_t + z_dis_t ≤ 1   ∀ t
+Current variables are defined in:
 
----
-
-### 5.2 Solar routing
-If solar mode is active, all available solar enters the battery:
-
-P_sol_t = S_t · z_sol_t
+DEFAULT_PARAMS["current"]
 
 ---
 
-### 5.3 Power activation and limits
+## Module Functions
 
-Grid charging:
-0 ≤ P_grid_t ≤ 100 · z_grid_t
+### build_client()
 
-Discharging:
-0 ≤ P_dis_t ≤ 100 · z_dis_t
-
-Total charging power:
-P_ch_t = P_grid_t + P_sol_t
+Creates an Open-Meteo client with:
+- HTTP caching (1 hour)
+- Retry logic (5 retries with backoff)
 
 ---
 
-## 6) Energy balance (battery dynamics)
+### fetch_api_response(client, params, url)
 
-E_t =
-E_{t-1}
-+ η_ch · P_ch_t · Δt
-− (P_dis_t · Δt) / η_dis
-− P_aux · Δt
-− E_{t-1} · r_sd · Δt
+Fetches forecast data from the API.
 
-with Δt = 0.25 hours.
+Returns:
+- First response object
 
-### Initial condition
-E_1 = E_0 = 300
-
-### Energy bounds
-60 ≤ E_t ≤ 540   ∀ t
+Raises:
+- ValueError if no responses are returned
 
 ---
 
-## 7) Objective function (intraday arbitrage)
+### fetch_historical_hourly(...)
 
-Maximize profit from selling energy and paying for grid purchases:
+Fetches historical hourly data from the Open-Meteo Archive API.
 
-max Σ_t p_t · (P_dis_t − P_grid_t)
-
----
-
-## 8) Cycle-count logic (max 3 cycles per day)
-
-### 8.1 Aggregate charge / discharge modes
-Charging (solar or grid):
-c_t = z_sol_t + z_grid_t
-
-Discharging:
-d_t = z_dis_t
-
-Constraint:
-c_t + d_t ≤ 1   ∀ t
+Returns:
+- Pandas DataFrame using the same schema as forecast hourly data
 
 ---
 
-### 8.2 Charge-flag variable
-q_t ∈ {0,1}
+### fetch_historical_daily(...)
 
-Interpretation:
-- q_t = 1 → there has been charging since the last discharge  
-- q_t = 0 → no charge pending
+Fetches historical daily data from the Archive API.
 
-Constraints:
-
-Charging turns flag ON:
-q_t ≥ c_t
-
-Discharging turns flag OFF:
-q_t ≤ 1 − d_t
-
-Idle does not reset the flag:
-q_t ≥ q_{t−1} − d_t    ∀ t ≥ 2
-
-Flag can only turn on if charging occurs:
-q_t ≤ q_{t−1} + c_t    ∀ t ≥ 2
+Returns:
+- Pandas DataFrame using the same schema as forecast daily data
 
 ---
 
-### 8.3 Detect start of discharge
-s_dis_t ∈ {0,1}
+### parse_current(api_response, current_vars) → dict
 
-s_dis_t ≥ d_t − d_{t−1}    ∀ t ≥ 2
-
----
-
-### 8.4 Cycle definition
-cycle_t ∈ {0,1}
-
-cycle_t ≤ s_dis_t
-cycle_t ≤ q_{t−1}
-cycle_t ≥ s_dis_t + q_{t−1} − 1    ∀ t ≥ 2
-
-Interpretation:
-A cycle is counted only when:
-- a discharge starts, and
-- there was charging since the previous discharge
-Idle time between charge and discharge does not create a new cycle.
+Returns a dictionary containing:
+- time_unix
+- time_utc
+- All variables listed in current_vars
 
 ---
 
-### 8.5 Daily cycle limit
-For each day D:
+### parse_hourly(api_response, hourly_vars) → DataFrame
 
-Σ_{t ∈ D} cycle_t ≤ 3
+Returns a DataFrame containing:
+- timestamp_utc
+- All variables listed in hourly_vars
+
+Raises:
+- WeatherIngestError if any variable length does not match timestamp length
+
+Allows:
+- Missing values (NaN), which may occur in historical datasets
+
+---
+
+### parse_daily(api_response, daily_vars) → DataFrame
+
+Returns a DataFrame containing:
+- date_utc
+- All variables listed in daily_vars
+
+Special handling:
+- sunrise and sunset are converted to UTC datetime
+
+---
+
+## Output Schemas
+
+### Hourly DataFrame
+
+Columns:
+- timestamp_utc
+- plus all variables in DEFAULT_PARAMS["hourly"]
+
+Example output file:
+
+data/historical_hourly_2025.csv
+
+Expected rows for 1 year: approximately 8760
+
+---
+
+### Daily DataFrame
+
+Columns:
+- date_utc
+- plus all variables in DEFAULT_PARAMS["daily"]
+
+Example output file:
+
+data/historical_daily_2025.csv
+
+Expected rows for 1 year: 365
+
+---
+
+### Current Conditions (dict)
+
+Keys:
+- time_unix
+- time_utc
+- plus all variables in DEFAULT_PARAMS["current"]
+
+---
+
+## Historical Data Notes
+
+Historical data is fetched from:
+
+https://archive-api.open-meteo.com/v1/archive
+
+Schema is identical to forecast schema.
+
+Some variables may contain missing values (NaN) depending on:
+- Location
+- Model availability
+- Time period coverage
+
+The parser intentionally allows NaN values to ensure robust downstream processing.
+
+---
+
+## Reference Request (Validation URL)
+
+The following URL was used to validate selected variables and parameters:
+
+https://archive-api.open-meteo.com/v1/archive?latitude=54.7584&longitude=-2.6953&start_date=2025-01-01&end_date=2025-12-31&daily=daylight_duration,shortwave_radiation_sum,sunrise,sunset,precipitation_sum,rain_sum,snowfall_sum,precipitation_hours,weather_code,temperature_2m_max,temperature_2m_min&hourly=temperature_2m,is_day,precipitation,rain,cloud_cover_low,cloud_cover_mid,cloud_cover_high,relative_humidity_2m,dew_point_2m,wind_speed_10m,wind_gusts_10m,wind_direction_10m,snowfall,surface_pressure,weather_code,sunshine_duration,shortwave_radiation,direct_radiation,cloud_cover,diffuse_radiation&timezone=GMT
+
+---
+
+## How to Run
+
+From the project directory:
+
+python3 weather_fetcher.py
+
+This will:
+
+1. Fetch current and forecast weather data
+2. Fetch full 2025 historical hourly and daily data
+3. Create the following files inside the `data/` folder:
+   - data/historical_hourly_2025.csv
+   - data/historical_daily_2025.csv
+4. Print row counts in the terminal for verification
+---
+
+## How to Run Tests
+
+python3 -m pytest -q
 
 ---
 
@@ -222,3 +251,6 @@ Troubleshooting tips
 
 Packaging note
 - The `all` extra previously referenced an undefined `ors` extra; this has been removed. Use `pip install -e .[all]` after installing any required system solvers, or install extras selectively (e.g., `pip install -e .[dev,ml]`).
+
+All core parsing logic is covered by automated tests.
+
