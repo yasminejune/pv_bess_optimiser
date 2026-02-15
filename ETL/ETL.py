@@ -116,7 +116,27 @@ def merge_datasets(price_data, weather_data, sun_data, time_data):
     
     return merged_data
 
-def preprocess_merge(price_data, weather_data, sun_data):
+def add_lagged_features(dataframe, lag_steps, drop_na=True):
+    if 'Timestamp' not in dataframe.columns:
+        raise ValueError("Timestamp column missing; cannot build lagged features.")
+
+    dataframe = dataframe.sort_values('Timestamp').reset_index(drop=True)
+
+    numeric_cols = dataframe.select_dtypes(include=['number', 'bool']).columns
+    numeric_cols = [col for col in numeric_cols if col != 'Timestamp']
+
+    for col in numeric_cols:
+        for step in lag_steps:
+            dataframe[f'{col}_lag_{step}h'] = dataframe[col].shift(step)
+
+    if drop_na:
+        max_lag = max(lag_steps) if lag_steps else 0
+        if max_lag > 0:
+            dataframe = dataframe.iloc[max_lag:].reset_index(drop=True)
+
+    return dataframe
+
+def preprocess_merge(price_data, weather_data, sun_data, lag_steps=(1, 2, 3, 6, 12, 24), drop_na=True):
     price_range = get_timestamp_range(price_data)
     weather_range = get_timestamp_range(weather_data)
     sun_range = get_timestamp_range(sun_data)
@@ -148,7 +168,8 @@ def preprocess_merge(price_data, weather_data, sun_data):
     weather_data = transform_weather_data(weather_data) 
     sun_data = transform_sun_data(sun_data) 
     price_data = transform_price_data(price_data)
-    merged_data = merge_datasets(price_data, weather_data, sun_data, time_data) 
+    merged_data = merge_datasets(price_data, weather_data, sun_data, time_data)
+    merged_data = add_lagged_features(merged_data, lag_steps=lag_steps, drop_na=drop_na)
     return merged_data
 
 def main():

@@ -1,5 +1,5 @@
 Expected columns for price_data:
-ts_utc, price_mid__price__APXMIDP, price_mid__volume__APXMIDP, price_mid__price__avg_providers, price_mid__volume__sum_providers, price_mid__price__vwap_providers, demand_itsdo__settlementPeriod, demand_itsdo__demand, demand_indo__settlementPeriod, demand_indo__initialDemandOutturn, demand_indo__initialTransmissionSystemDemandOutturn, demand_inddem__demand, demand_inddem__settlementPeriod, target_price, hour, dayofweek, month, is_weekend, target_lag_1, target_lag_2, target_lag_4, target_lag_96, __source_file, price, demand_istdo, Timestamp, demand_indo, demand_indeem
+price, demand_istdo, Timestamp, demand_indo, demand_indeem
 
 Expected columns for historical_hourly:
 Timestamp, temperature_2m, relative_humidity_2m, dew_point_2m, precipitation, rain, snowfall, cloud_cover, cloud_cover_low, cloud_cover_mid, cloud_cover_high, is_day, shortwave_radiation, direct_radiation, wind_speed_10m, wind_gusts_10m, wind_direction_10m, surface_pressure, weather_code

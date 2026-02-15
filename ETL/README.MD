@@ -15,7 +15,7 @@ How to run
 	 python -m ETL.ETL
 
 Notes
-- The script creates time features, normalizes numeric weather columns, and computes a solar intensity feature.
+- The script creates time features, normalizes numeric weather columns, computes a solar intensity feature, and adds lagged features for numeric columns.
 - Price data is resampled to hourly using mean for numeric columns and first for non-numeric columns.
 - Timestamp columns are required in all three source files.
 
