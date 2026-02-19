@@ -8,5 +8,21 @@
             "approve": true,
             "matchCommandLine": true
         }
+    },
+    "workbench.colorCustomizations": {
+        "titleBar.activeBackground": "#044859",
+        "titleBar.activeForeground": "#ffffff",
+        "titleBar.inactiveBackground": "#03323e",
+        "titleBar.inactiveForeground": "#ffffff99",
+        "statusBar.background": "#0891B2",
+        "statusBar.foreground": "#ffffff",
+        "statusBar.noFolderBackground": "#044859",
+        "statusBar.debuggingBackground": "#219cba",
+        "statusBar.debuggingForeground": "#ffffff",
+        "activityBar.background": "#044859",
+        "activityBar.foreground": "#ffffff",
+        "activityBar.inactiveForeground": "#ffffff80",
+        "activityBarBadge.background": "#0891B2",
+        "activityBarBadge.foreground": "#ffffff"
     }
 }

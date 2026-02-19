@@ -173,6 +173,7 @@ ignore = [
 "src/ors/services/optimizer/optimizer.py" = ["D", "ANN"]
 # standalone scripts are not importable library code
 "scripts/**" = ["D", "ANN"]
+"notebooks/**" = ["N806", "B905", "D", "ANN"]  # Statistical names (Q1/Q3/IQR), zip strict=, docstrings and annotations not required in notebooks
 
 [tool.ruff.lint.pydocstyle]
 # Use Google convention: requires Args/Returns/Raises/Attributes sections,
