@@ -56,3 +56,7 @@ Thumbs.db
 .dmypy.json
 dmypy.json
 .cache.sqlite
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+Jupyter
