@@ -254,3 +254,58 @@ Packaging note
 
 All core parsing logic is covered by automated tests.
 
+
+---
+
+## Code Quality
+
+The project enforces **formatting** (Black), **linting + docstring style** (Ruff), and **type checking** (mypy) across all source code.
+
+### Running locally
+
+```bash
+# Auto-format with Black
+make format
+
+# Lint with Ruff (auto-fix safe issues)
+make lint
+
+# Type-check with mypy
+make typecheck
+
+# Run all checks together (same as CI – exits non-zero on failure)
+make ci
+```
+
+Or without `make`:
+
+```bash
+python -m black src/ tests/
+python -m ruff check src/ tests/ --fix
+python -m mypy src/
+```
+
+### Rules enforced
+
+| Tool  | What is checked |
+|-------|-----------------|
+| **Black** | Consistent formatting, line length 100 |
+| **Ruff D** (pydocstyle, Google convention) | Public functions and classes must have Google-style docstrings with `Args:`, `Returns:`, `Raises:`, and `Attributes:` sections where applicable |
+| **Ruff ANN** (flake8-annotations) | All function arguments and return types must be explicitly annotated |
+| **mypy** | Full type-checking with `disallow_untyped_defs`, `disallow_incomplete_defs`, `no_implicit_optional`, and `warn_return_any` |
+
+### Conventions
+
+- **Docstring style**: Google style – summary on the opening line, followed by `Args:`, `Returns:`, and `Raises:` sections as needed.
+- **Private helpers** (leading `_`): type annotations are still required; docstrings are optional.
+- **Tests** and the Pyomo **optimizer script** are excluded from docstring/annotation checks (see `pyproject.toml` `per-file-ignores`).
+
+### CI enforcement
+
+The `make ci` command is the authoritative check. All three tools must exit 0:
+
+```
+black --check src/ tests/    # formatting
+ruff check src/ tests/       # lint + docstrings + annotations
+mypy src/                    # type checking
+```

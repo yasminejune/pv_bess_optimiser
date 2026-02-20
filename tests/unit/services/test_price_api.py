@@ -10,12 +10,14 @@ Enable real API tests with:
 """
 
 import importlib
+import inspect
 import os
 import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 import requests
@@ -783,8 +785,6 @@ def test_real_api_fetch_endpoint_robust_smoke(bmrs):
 # Extra tests for branch coverage
 # =========================
 
-import numpy as np
-
 
 def test_cov_normalize_payload_dict_unknown_list_key(bmrs):
     payload = {"random_list": [{"a": 1}, {"a": 2}]}
@@ -1226,9 +1226,6 @@ def test_cov_choose_target_price_col_hits_line_743_fallback_return(bmrs):
 # =========================
 # NEW TESTS: price_data extraction/export
 # =========================
-import inspect
-
-import pytest
 
 
 def _get_required_fn(module, fn_name: str):

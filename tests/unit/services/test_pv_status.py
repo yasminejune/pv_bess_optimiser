@@ -3,6 +3,7 @@
 from datetime import datetime
 
 import pytest
+
 from ors.domain.models.pv import PVSpec, PVTelemetry
 from ors.services.pv_status import estimate_energy_from_radiance, update_pv_state
 

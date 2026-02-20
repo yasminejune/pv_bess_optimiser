@@ -31,7 +31,7 @@ def print_site_summary(site_type: SiteType) -> None:
     print(f"Clipping Loss:      {config.clipping_loss_factor * 100:.1f}%")
     print(f"Availability:       {config.availability * 100:.2f}%")
     print(f"Outage Duration:    {config.forced_outage_duration_h:.1f} h")
-    print(f"\nPVSpec Conversion:")
+    print("\nPVSpec Conversion:")
     print(f"  Rated Power:      {spec.rated_power_kw:.0f} kW")
     print(f"  Max Export:       {spec.max_export_kw:.0f} kW")
     print(f"  DC Capacity:      {spec.dc_capacity_kw:.0f} kW")
