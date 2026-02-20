@@ -1,3 +1,5 @@
+"""XGBoost model training, evaluation, and persistence utilities."""
+
 from __future__ import annotations
 
 import json
@@ -16,6 +18,19 @@ if TYPE_CHECKING:
 
 
 def resolve_target_column(df: pd.DataFrame, target_col: str) -> str:
+    """Return the name of the target column present in *df*, trying fallbacks if needed.
+
+    Args:
+        df: DataFrame to search for the target column.
+        target_col: Preferred target column name.
+
+    Returns:
+        The first matching column name found in *df*.
+
+    Raises:
+        ValueError: If neither *target_col* nor any fallback candidate is in *df*.
+
+    """
     if target_col in df.columns:
         return target_col
     for candidate in ["price", "target_price", "Price"]:
@@ -25,6 +40,20 @@ def resolve_target_column(df: pd.DataFrame, target_col: str) -> str:
 
 
 def prepare_features(df: pd.DataFrame, target_col: str = "Price") -> tuple[pd.DataFrame, pd.Series]:
+    """Extract numeric feature matrix and target vector from a merged DataFrame.
+
+    Drops the target column, ``Timestamp``, and non-numeric columns; casts booleans
+    to integers; fills remaining ``NaN`` values with column medians.
+
+    Args:
+        df: Merged DataFrame containing features and a target column.
+        target_col: Name of the column to use as the prediction target.
+
+    Returns:
+        Tuple of ``(features, target)`` where *features* is a numeric DataFrame
+        and *target* is a float Series.
+
+    """
     resolved_target = resolve_target_column(df, target_col)
 
     features = df.drop(columns=[resolved_target])
@@ -46,6 +75,19 @@ def prepare_features(df: pd.DataFrame, target_col: str = "Price") -> tuple[pd.Da
 
 
 def prepare_features_for_inference(df: pd.DataFrame, target_col: str = "Price") -> pd.DataFrame:
+    """Extract numeric feature matrix from a DataFrame, tolerating a missing target column.
+
+    Drops the target column if present, along with ``Timestamp`` and non-numeric columns;
+    casts booleans to integers; fills ``NaN`` values with column medians.
+
+    Args:
+        df: DataFrame that may or may not include a target column.
+        target_col: Name of the target column to drop if present.
+
+    Returns:
+        Numeric feature DataFrame suitable for model inference.
+
+    """
     resolved_target = None
     for candidate in [target_col, "price", "target_price", "Price"]:
         if candidate in df.columns:
@@ -73,6 +115,20 @@ def prepare_features_for_inference(df: pd.DataFrame, target_col: str = "Price") 
 def time_based_split(
     features: pd.DataFrame, target: pd.Series, test_size: float = 0.2
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+    """Split features and target into chronological train/test sets.
+
+    Args:
+        features: Feature DataFrame ordered by time.
+        target: Corresponding target Series.
+        test_size: Proportion of data to assign to the test set (between 0 and 1).
+
+    Returns:
+        Tuple of ``(x_train, x_test, y_train, y_test)``.
+
+    Raises:
+        ValueError: If *test_size* is not strictly between 0 and 1.
+
+    """
     if not 0.0 < test_size < 1.0:
         raise ValueError("test_size must be between 0 and 1.")
     split_idx = int(len(features) * (1 - test_size))
@@ -89,6 +145,18 @@ def train_xgb_regressor(
     random_state: int = 42,
     params: dict[str, Any] | None = None,
 ) -> XGBRegressor:
+    """Train an XGBoost regressor with sensible defaults and optional overrides.
+
+    Args:
+        x_train: Training feature DataFrame.
+        y_train: Training target Series.
+        random_state: Random seed for reproducibility.
+        params: Optional dictionary of hyperparameters to override the defaults.
+
+    Returns:
+        Fitted :class:`xgboost.XGBRegressor` instance.
+
+    """
     from xgboost import XGBRegressor
 
     base_params = {
@@ -110,7 +178,20 @@ def train_xgb_regressor(
     return model
 
 
-def evaluate_model(model: Any, x_test: pd.DataFrame, y_test: pd.Series) -> dict[str, float]:
+def evaluate_model(
+    model: XGBRegressor, x_test: pd.DataFrame, y_test: pd.Series
+) -> dict[str, float]:
+    """Compute regression evaluation metrics for a trained model on held-out data.
+
+    Args:
+        model: Trained XGBRegressor instance.
+        x_test: Test feature DataFrame.
+        y_test: True target values for the test set.
+
+    Returns:
+        Dictionary with keys ``mae``, ``rmse``, ``mape``, and ``r2``.
+
+    """
     preds = model.predict(x_test)
     safe_denom = np.where(np.abs(y_test) < 1e-8, np.nan, y_test)
     raw_mape = float(np.nanmean(np.abs((y_test - preds) / safe_denom)) * 100)
@@ -124,12 +205,28 @@ def evaluate_model(model: Any, x_test: pd.DataFrame, y_test: pd.Series) -> dict[
 
 
 def save_metrics(metrics: dict[str, float], output_path: Path) -> None:
+    """Serialise an evaluation metrics dictionary to a JSON file.
+
+    Args:
+        metrics: Dictionary of metric names to float values.
+        output_path: Destination file path for the JSON output.
+
+    """
     output_path.write_text(json.dumps(metrics, indent=2))
 
 
 def save_predictions(
     timestamps: pd.Series, y_true: pd.Series, y_pred: np.ndarray, output_path: Path
 ) -> None:
+    """Save ground-truth and predicted values alongside their timestamps to CSV.
+
+    Args:
+        timestamps: Timestamp Series aligned to *y_true* and *y_pred*.
+        y_true: True target values.
+        y_pred: Predicted target values.
+        output_path: Destination file path for the CSV output.
+
+    """
     output = pd.DataFrame(
         {
             "Timestamp": timestamps.values,
@@ -140,7 +237,15 @@ def save_predictions(
     output.to_csv(output_path, index=False)
 
 
-def save_feature_importance(model: Any, features: pd.DataFrame, output_path: Path) -> None:
+def save_feature_importance(model: XGBRegressor, features: pd.DataFrame, output_path: Path) -> None:
+    """Save a sorted feature importance table to CSV.
+
+    Args:
+        model: Trained XGBRegressor exposing a ``feature_importances_`` attribute.
+        features: Feature DataFrame used during training (provides column names).
+        output_path: Destination file path for the CSV output.
+
+    """
     importance = model.feature_importances_
     table = (
         pd.DataFrame({"feature": features.columns, "importance": importance})
@@ -151,6 +256,16 @@ def save_feature_importance(model: Any, features: pd.DataFrame, output_path: Pat
 
 
 def create_model_run_dir(project_root: Path, model_name: str) -> Path:
+    """Create a unique, timestamped directory under ``Prediction/Models/`` for a run.
+
+    Args:
+        project_root: Absolute path to the project root directory.
+        model_name: Base name used as a prefix for the run directory.
+
+    Returns:
+        Path to the newly created run directory.
+
+    """
     models_dir = project_root / "Prediction" / "Models"
     models_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -169,7 +284,18 @@ def create_model_run_dir(project_root: Path, model_name: str) -> Path:
         index += 1
 
 
-def predict_prices(model: Any, df: pd.DataFrame, target_col: str = "Price") -> np.ndarray:
+def predict_prices(model: XGBRegressor, df: pd.DataFrame, target_col: str = "Price") -> np.ndarray:
+    """Generate price predictions for a DataFrame using a trained model.
+
+    Args:
+        model: Trained XGBRegressor with a ``predict`` method.
+        df: DataFrame containing the same features used during training.
+        target_col: Name of the target column to exclude from features if present.
+
+    Returns:
+        NumPy array of predicted price values.
+
+    """
     features = prepare_features_for_inference(df, target_col=target_col)
     return cast(np.ndarray, model.predict(features))
 
@@ -180,7 +306,19 @@ def train_and_save_from_dataframe(
     model_name: str = "xgboost",
     test_size: float = 0.2,
 ) -> Path:
+    """Train an XGBoost model on *df* and persist all artifacts to a run directory.
 
+    Args:
+        project_root: Absolute path to the project root directory.
+        df: Merged DataFrame containing features, a ``Timestamp`` column, and a
+            ``Price`` target column.
+        model_name: Base name used when creating the run directory.
+        test_size: Fraction of data reserved for the test set.
+
+    Returns:
+        Path to the run directory containing the saved model and artifacts.
+
+    """
     features, target = prepare_features(df, target_col="Price")
     x_train, x_test, y_train, y_test = time_based_split(features, target, test_size=test_size)
 
@@ -218,6 +356,17 @@ def train_and_save_from_dataframe(
 
 
 def train_and_save(project_root: Path, model_name: str = "xgboost", test_size: float = 0.2) -> Path:
+    """Build the merged dataset, train a model, and save all artifacts.
+
+    Args:
+        project_root: Absolute path to the project root directory containing ``Data/``.
+        model_name: Base name used when creating the run directory.
+        test_size: Fraction of data reserved for the test set.
+
+    Returns:
+        Path to the run directory containing the saved model and artifacts.
+
+    """
     df = build_merged_dataset(project_root)
     return train_and_save_from_dataframe(
         project_root, df, model_name=model_name, test_size=test_size
@@ -225,8 +374,8 @@ def train_and_save(project_root: Path, model_name: str = "xgboost", test_size: f
 
 
 def main() -> None:
-    project_root = Path(__file__).resolve().parents[4]
-    train_and_save(project_root)
+    """Train and save a model using the default project root layout."""
+    train_and_save(Path(__file__).resolve().parents[4])
 
 
 if __name__ == "__main__":

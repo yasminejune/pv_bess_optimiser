@@ -1,3 +1,5 @@
+"""XGBoost hyperparameter grid search with artifact persistence."""
+
 from __future__ import annotations
 
 import argparse
@@ -38,6 +40,12 @@ else:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the hyperparameter search script.
+
+    Returns:
+        Parsed argument namespace.
+
+    """
     parser = argparse.ArgumentParser(
         description="Run an XGBoost hyperparameter search and save the best model artifacts."
     )
@@ -56,6 +64,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def default_param_grid() -> dict[str, list[Any]]:
+    """Return the default XGBoost hyperparameter search grid.
+
+    Returns:
+        Dictionary mapping hyperparameter names to lists of candidate values.
+
+    """
     return {
         "n_estimators": [300, 500],
         "learning_rate": [0.03, 0.07],
@@ -67,6 +81,19 @@ def default_param_grid() -> dict[str, list[Any]]:
 
 
 def is_better(metric_name: str, candidate: float, best: float | None) -> bool:
+    """Determine whether *candidate* is an improvement over *best* for a given metric.
+
+    For ``r2`` a higher value is better; for all other metrics a lower value is better.
+
+    Args:
+        metric_name: Name of the metric being compared (e.g. ``"rmse"`` or ``"r2"``).
+        candidate: The new metric value to evaluate.
+        best: The current best metric value, or ``None`` if no baseline exists yet.
+
+    Returns:
+        ``True`` if *candidate* is better than *best* (or *best* is ``None``).
+
+    """
     if best is None:
         return True
     if metric_name == "r2":
@@ -75,6 +102,12 @@ def is_better(metric_name: str, candidate: float, best: float | None) -> bool:
 
 
 def main() -> None:
+    """Run a grid hyperparameter search and save the best model artifacts.
+
+    Raises:
+        RuntimeError: If no models were trained (empty parameter grid).
+
+    """
     args = parse_args()
     project_root = args.project_root or (Path(__file__).resolve().parents[4])
 

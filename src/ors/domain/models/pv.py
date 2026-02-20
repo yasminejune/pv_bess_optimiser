@@ -24,6 +24,7 @@ class PVSpec:
         clipping_loss_factor: Clipping loss factor (0-1). Optional.
         availability: System availability factor (0-1). Optional.
         forced_outage_duration_h: Expected forced outage duration (hours). Optional.
+
     """
 
     rated_power_kw: float
@@ -42,7 +43,7 @@ class PVSpec:
     availability: float | None = None
     forced_outage_duration_h: float | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate PV specification parameters."""
         if self.rated_power_kw <= 0:
             raise ValueError("rated_power_kw must be positive")
@@ -60,24 +61,17 @@ class PVSpec:
             raise ValueError("ac_capacity_kw must be positive")
         if self.dc_ac_ratio is not None and self.dc_ac_ratio <= 0:
             raise ValueError("dc_ac_ratio must be positive")
-        if self.inverter_efficiency is not None and not (
-            0 <= self.inverter_efficiency <= 1
-        ):
+        if self.inverter_efficiency is not None and not (0 <= self.inverter_efficiency <= 1):
             raise ValueError("inverter_efficiency must be between 0 and 1")
         if self.performance_ratio is not None and not (0 <= self.performance_ratio <= 1):
             raise ValueError("performance_ratio must be between 0 and 1")
         if self.degradation_per_year is not None and self.degradation_per_year < 0:
             raise ValueError("degradation_per_year must be non-negative")
-        if self.clipping_loss_factor is not None and not (
-            0 <= self.clipping_loss_factor <= 1
-        ):
+        if self.clipping_loss_factor is not None and not (0 <= self.clipping_loss_factor <= 1):
             raise ValueError("clipping_loss_factor must be between 0 and 1")
         if self.availability is not None and not (0 <= self.availability <= 1):
             raise ValueError("availability must be between 0 and 1")
-        if (
-            self.forced_outage_duration_h is not None
-            and self.forced_outage_duration_h < 0
-        ):
+        if self.forced_outage_duration_h is not None and self.forced_outage_duration_h < 0:
             raise ValueError("forced_outage_duration_h must be non-negative")
 
 
@@ -89,6 +83,7 @@ class PVTelemetry:
         timestamp: Measurement timestamp
         generation_kw: Instantaneous measured PV output (kW). None if missing.
         solar_radiance_kw_per_m2: Solar radiance (kW/m²). Optional, used for estimation when generation is missing.
+
     """
 
     timestamp: datetime
@@ -110,6 +105,7 @@ class PVState:
         exportable_kwh: Energy available for export this timestep (kWh)
         estimated_from_radiance: Whether generation was estimated from radiance
         quality_flags: Set of quality issue flags
+
     """
 
     timestamp: datetime

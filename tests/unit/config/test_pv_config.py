@@ -87,43 +87,82 @@ class TestPVConverter:
             assert spec.max_export_kw is not None
 
 
+_VALID_PARAMS = {
+    "site_id": "Test",
+    "pv_block": "PV1",
+    "pv_capacity_dc_mw": 65.0,
+    "pv_capacity_ac_mw": 50.0,
+    "dc_ac_ratio": 1.3,
+    "module_efficiency": 0.21,
+    "inverter_efficiency": 0.985,
+    "performance_ratio": 0.82,
+    "degradation_per_year": 0.5,
+    "curtailment_threshold_mw": 48.0,
+    "clipping_loss_factor": 0.03,
+    "availability": 0.995,
+    "forced_outage_duration_h": 1.0,
+}
+
+
 class TestPVSiteConfigValidation:
     """Test PV site configuration validation."""
 
     def test_invalid_dc_capacity_raises_error(self):
         """Test that invalid DC capacity raises ValueError."""
         with pytest.raises(ValueError, match="pv_capacity_dc_mw must be positive"):
-            PVSiteConfig(
-                site_id="Test",
-                pv_block="PV1",
-                pv_capacity_dc_mw=-10.0,
-                pv_capacity_ac_mw=50.0,
-                dc_ac_ratio=1.3,
-                module_efficiency=0.21,
-                inverter_efficiency=0.985,
-                performance_ratio=0.82,
-                degradation_per_year=0.5,
-                curtailment_threshold_mw=48.0,
-                clipping_loss_factor=0.03,
-                availability=0.995,
-                forced_outage_duration_h=1.0,
-            )
+            PVSiteConfig(**{**_VALID_PARAMS, "pv_capacity_dc_mw": -10.0})
 
-    def test_invalid_efficiency_raises_error(self):
-        """Test that invalid efficiency raises ValueError."""
+    def test_invalid_ac_capacity_raises_error(self):
+        """Test that invalid AC capacity raises ValueError."""
+        with pytest.raises(ValueError, match="pv_capacity_ac_mw must be positive"):
+            PVSiteConfig(**{**_VALID_PARAMS, "pv_capacity_ac_mw": 0.0})
+
+    def test_invalid_dc_ac_ratio_raises_error(self):
+        """Test that invalid DC/AC ratio raises ValueError."""
+        with pytest.raises(ValueError, match="dc_ac_ratio must be positive"):
+            PVSiteConfig(**{**_VALID_PARAMS, "dc_ac_ratio": -1.0})
+
+    def test_invalid_module_efficiency_raises_error(self):
+        """Test that invalid module efficiency raises ValueError."""
         with pytest.raises(ValueError, match="module_efficiency must be in"):
-            PVSiteConfig(
-                site_id="Test",
-                pv_block="PV1",
-                pv_capacity_dc_mw=65.0,
-                pv_capacity_ac_mw=50.0,
-                dc_ac_ratio=1.3,
-                module_efficiency=1.5,  # Invalid: > 1
-                inverter_efficiency=0.985,
-                performance_ratio=0.82,
-                degradation_per_year=0.5,
-                curtailment_threshold_mw=48.0,
-                clipping_loss_factor=0.03,
-                availability=0.995,
-                forced_outage_duration_h=1.0,
-            )
+            PVSiteConfig(**{**_VALID_PARAMS, "module_efficiency": 1.5})
+
+    def test_invalid_inverter_efficiency_raises_error(self):
+        """Test that invalid inverter efficiency raises ValueError."""
+        with pytest.raises(ValueError, match="inverter_efficiency must be in"):
+            PVSiteConfig(**{**_VALID_PARAMS, "inverter_efficiency": -0.1})
+
+    def test_invalid_performance_ratio_raises_error(self):
+        """Test that invalid performance ratio raises ValueError."""
+        with pytest.raises(ValueError, match="performance_ratio must be in"):
+            PVSiteConfig(**{**_VALID_PARAMS, "performance_ratio": 1.1})
+
+    def test_invalid_degradation_raises_error(self):
+        """Test that negative degradation rate raises ValueError."""
+        with pytest.raises(ValueError, match="degradation_per_year must be non-negative"):
+            PVSiteConfig(**{**_VALID_PARAMS, "degradation_per_year": -0.5})
+
+    def test_invalid_curtailment_threshold_raises_error(self):
+        """Test that negative curtailment threshold raises ValueError."""
+        with pytest.raises(ValueError, match="curtailment_threshold_mw must be non-negative"):
+            PVSiteConfig(**{**_VALID_PARAMS, "curtailment_threshold_mw": -1.0})
+
+    def test_invalid_clipping_loss_factor_raises_error(self):
+        """Test that invalid clipping loss factor raises ValueError."""
+        with pytest.raises(ValueError, match="clipping_loss_factor must be in"):
+            PVSiteConfig(**{**_VALID_PARAMS, "clipping_loss_factor": 1.5})
+
+    def test_invalid_availability_raises_error(self):
+        """Test that invalid availability raises ValueError."""
+        with pytest.raises(ValueError, match="availability must be in"):
+            PVSiteConfig(**{**_VALID_PARAMS, "availability": -0.1})
+
+    def test_invalid_forced_outage_duration_raises_error(self):
+        """Test that negative forced outage duration raises ValueError."""
+        with pytest.raises(ValueError, match="forced_outage_duration_h must be non-negative"):
+            PVSiteConfig(**{**_VALID_PARAMS, "forced_outage_duration_h": -1.0})
+
+    def test_get_config_with_enum_skips_conversion(self):
+        """Test that passing a SiteType enum directly returns config without string conversion."""
+        config = get_pv_config(SiteType.BURST_1)
+        assert config.site_id == "Site_Burst_1"

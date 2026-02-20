@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 import pytest
-from weather_fetcher import WeatherFetcherError, build_hourly_dataframe
+
+from ors.clients.weather_fetcher import WeatherFetcherError, build_hourly_dataframe
 
 
 class FakeHourlyVar:

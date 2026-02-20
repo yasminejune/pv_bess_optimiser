@@ -1,3 +1,5 @@
+"""PDF report generation for XGBoost model evaluation results."""
+
 from __future__ import annotations
 
 import argparse
@@ -14,6 +16,18 @@ from .prediction_model import prepare_features, resolve_target_column, time_base
 
 
 def find_project_root(start: Path) -> Path:
+    """Locate the project root by searching upward for a directory with ``Data/`` and ``src/``.
+
+    Args:
+        start: Directory path from which to begin the upward search.
+
+    Returns:
+        Path to the first ancestor directory that contains both ``Data/`` and ``src/``.
+
+    Raises:
+        FileNotFoundError: If no suitable project root is found.
+
+    """
     for parent in [start] + list(start.parents):
         if (parent / "Data").exists() and (parent / "src").exists():
             return parent
@@ -21,6 +35,16 @@ def find_project_root(start: Path) -> Path:
 
 
 def find_latest_run_dir(models_dir: Path) -> Path | None:
+    """Return the most recently modified subdirectory inside *models_dir*.
+
+    Args:
+        models_dir: Directory containing individual model run subdirectories.
+
+    Returns:
+        Path to the most recently modified run directory, or ``None`` if the
+        directory does not exist or contains no subdirectories.
+
+    """
     if not models_dir.exists():
         return None
     candidates = [p for p in models_dir.iterdir() if p.is_dir()]
@@ -30,6 +54,16 @@ def find_latest_run_dir(models_dir: Path) -> Path | None:
 
 
 def load_metrics(metrics_path: Path) -> dict[str, float]:
+    """Load evaluation metrics from a JSON file.
+
+    Args:
+        metrics_path: Path to the metrics JSON file.
+
+    Returns:
+        Dictionary mapping metric names to float values, or an empty dict if the
+        file does not exist.
+
+    """
     if not metrics_path.exists():
         return {}
     data = json.loads(metrics_path.read_text())
@@ -37,18 +71,46 @@ def load_metrics(metrics_path: Path) -> dict[str, float]:
 
 
 def load_feature_importance(path: Path) -> pd.DataFrame:
+    """Load a feature importance CSV into a DataFrame.
+
+    Args:
+        path: Path to the feature importance CSV file.
+
+    Returns:
+        DataFrame with ``feature`` and ``importance`` columns, or an empty
+        DataFrame with those columns if the file does not exist.
+
+    """
     if not path.exists():
         return pd.DataFrame(columns=["feature", "importance"])
     return pd.read_csv(path)
 
 
 def load_model_metadata(path: Path | None) -> dict[str, Any]:
+    """Load model metadata from a JSON file.
+
+    Args:
+        path: Path to the metadata JSON file, or ``None``.
+
+    Returns:
+        Dictionary of metadata values, or an empty dict if *path* is ``None`` or
+        the file does not exist.
+
+    """
     if path is None or not path.exists():
         return {}
     return cast(dict[str, Any], json.loads(path.read_text()))
 
 
 def create_text_page(pdf: PdfPages, title: str, lines: list[str]) -> None:
+    """Append a formatted text page to a PDF.
+
+    Args:
+        pdf: Open :class:`~matplotlib.backends.backend_pdf.PdfPages` object.
+        title: Bold title rendered at the top of the page.
+        lines: List of text strings to render line by line below the title.
+
+    """
     fig, ax = plt.subplots(figsize=(8.5, 11))
     ax.axis("off")
     fig.text(0.08, 0.95, title, fontsize=16, weight="bold")
@@ -67,6 +129,14 @@ def create_text_page(pdf: PdfPages, title: str, lines: list[str]) -> None:
 
 
 def create_table_page(pdf: PdfPages, title: str, df: pd.DataFrame) -> None:
+    """Append a DataFrame table page to a PDF.
+
+    Args:
+        pdf: Open :class:`~matplotlib.backends.backend_pdf.PdfPages` object.
+        title: Bold title rendered at the top of the page.
+        df: DataFrame whose values and column headers are rendered as a table.
+
+    """
     fig, ax = plt.subplots(figsize=(8.5, 11))
     ax.axis("off")
     fig.text(0.08, 0.95, title, fontsize=16, weight="bold")
@@ -85,6 +155,15 @@ def create_table_page(pdf: PdfPages, title: str, df: pd.DataFrame) -> None:
 
 
 def plot_actual_vs_predicted(df: pd.DataFrame) -> plt.Figure:
+    """Create a line chart comparing actual and predicted prices over the test window.
+
+    Args:
+        df: DataFrame with ``Timestamp``, ``Price_true``, and ``Price_pred`` columns.
+
+    Returns:
+        Matplotlib Figure object.
+
+    """
     fig, ax = plt.subplots(figsize=(11, 4.5))
     ax.plot(df["Timestamp"], df["Price_true"], label="Actual", linewidth=1.5)
     ax.plot(df["Timestamp"], df["Price_pred"], label="Predicted", linewidth=1.2, alpha=0.85)
@@ -98,6 +177,15 @@ def plot_actual_vs_predicted(df: pd.DataFrame) -> plt.Figure:
 
 
 def plot_residuals(df: pd.DataFrame) -> plt.Figure:
+    """Create a time-series plot of prediction residuals.
+
+    Args:
+        df: DataFrame with ``Timestamp`` and ``Residual`` columns.
+
+    Returns:
+        Matplotlib Figure object.
+
+    """
     fig, ax = plt.subplots(figsize=(11, 4))
     ax.plot(df["Timestamp"], df["Residual"], linewidth=1.0)
     ax.axhline(0, color="black", linewidth=1.0, linestyle="--")
@@ -110,6 +198,15 @@ def plot_residuals(df: pd.DataFrame) -> plt.Figure:
 
 
 def plot_residual_distribution(df: pd.DataFrame) -> plt.Figure:
+    """Create a histogram of the residual distribution.
+
+    Args:
+        df: DataFrame with a ``Residual`` column.
+
+    Returns:
+        Matplotlib Figure object.
+
+    """
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.hist(df["Residual"].dropna(), bins=40, edgecolor="white", alpha=0.85)
     ax.set_title("Residual Distribution")
@@ -121,6 +218,17 @@ def plot_residual_distribution(df: pd.DataFrame) -> plt.Figure:
 
 
 def plot_feature_importance(importance_df: pd.DataFrame, top_n: int = 20) -> plt.Figure:
+    """Create a horizontal bar chart of the top-*n* most important features.
+
+    Args:
+        importance_df: DataFrame with ``feature`` and ``importance`` columns sorted
+            in descending order of importance.
+        top_n: Maximum number of features to display.
+
+    Returns:
+        Matplotlib Figure object.
+
+    """
     plot_df = importance_df.head(top_n).iloc[::-1]
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.barh(plot_df["feature"], plot_df["importance"], color="#4C78A8")
@@ -144,6 +252,25 @@ def build_report(
     target_col: str = "Price",
     merged_df: pd.DataFrame | None = None,
 ) -> None:
+    """Build and save a multi-page PDF model evaluation report.
+
+    Generates pages covering summary statistics, evaluation metrics, feature list,
+    preprocessing notes, and visualisations (actual vs predicted, residuals, feature
+    importances).
+
+    Args:
+        project_root: Absolute path to the project root directory.
+        output_path: Destination file path for the PDF report.
+        preds_path: Path to the CSV file containing model predictions.
+        metrics_path: Path to the JSON file containing evaluation metrics.
+        importance_path: Path to the CSV file containing feature importances.
+        model_metadata_path: Path to the JSON metadata file, or ``None``.
+        test_size: Fraction of data that was used as the test set.
+        model_name: Human-readable model name shown in the report.
+        target_col: Name of the target column in the merged dataset.
+        merged_df: Pre-loaded merged DataFrame; loaded from disk when ``None``.
+
+    """
     preds = pd.read_csv(preds_path, parse_dates=["Timestamp"])
     metrics = load_metrics(metrics_path)
     importance_df = load_feature_importance(importance_path)
@@ -230,6 +357,12 @@ def build_report(
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the report generator.
+
+    Returns:
+        Parsed argument namespace.
+
+    """
     parser = argparse.ArgumentParser(description="Generate a PDF model report.")
     parser.add_argument("--project-root", type=Path, default=None)
     parser.add_argument("--run-dir", type=Path, default=None)
@@ -244,6 +377,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Generate a PDF model evaluation report from the command line.
+
+    Raises:
+        FileNotFoundError: If a specified run directory does not exist.
+
+    """
     args = parse_args()
     project_root = args.project_root or find_project_root(Path.cwd())
     prediction_dir = project_root / "Prediction"

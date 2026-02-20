@@ -1,3 +1,5 @@
+"""Sample runner: load a pre-merged CSV and run a quick XGBoost training pass."""
+
 from __future__ import annotations
 
 import sys
@@ -14,6 +16,7 @@ else:
 
 
 def main() -> None:
+    """Load a pre-merged CSV and run a sample XGBoost training pass, saving all artefacts."""
     project_root = Path(__file__).resolve().parents[4]
     sample_path = project_root / "Data" / "merged_dataset.csv"
 

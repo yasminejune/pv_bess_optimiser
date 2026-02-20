@@ -9,8 +9,7 @@ def estimate_energy_from_radiance(
     panel_efficiency: float,
     timestep_minutes: int = 15,
 ) -> float:
-    """
-    Estimate PV energy production from solar radiance.
+    """Estimate PV energy production from solar radiance.
 
     Formula: energy_kwh = solar_radiance * panel_area * efficiency * time_interval_hours
 
@@ -25,6 +24,7 @@ def estimate_energy_from_radiance(
 
     Raises:
         ValueError: If any parameter is out of valid range
+
     """
     if timestep_minutes <= 0:
         raise ValueError(f"timestep_minutes must be positive, got {timestep_minutes}")
@@ -50,8 +50,7 @@ def update_pv_state(
     *,
     prev_state: PVState | None = None,
 ) -> PVState:
-    """
-    Update PV state from telemetry and specification.
+    """Update PV state from telemetry and specification.
 
     Args:
         spec: PV system specification
@@ -64,6 +63,7 @@ def update_pv_state(
 
     Raises:
         ValueError: If timestep_minutes <= 0
+
     """
     if timestep_minutes <= 0:
         raise ValueError(f"timestep_minutes must be positive, got {timestep_minutes}")

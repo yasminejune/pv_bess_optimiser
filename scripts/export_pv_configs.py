@@ -6,7 +6,6 @@ useful for documentation and reporting.
 
 import csv
 import json
-from pathlib import Path
 
 from ors.config.pv_config import PV_SITE_CONFIGS, SiteType
 
@@ -49,7 +48,7 @@ def generate_csv_table(output_path: str = "pv_site_configs.csv") -> None:
                     "Module_Efficiency": config.module_efficiency,
                     "Inverter_Efficiency": config.inverter_efficiency,
                     "Performance_Ratio": config.performance_ratio,
-                    "Degradation_per_year": config.degradation_per_year,
+                    "Degradation_Per_Year": config.degradation_per_year,
                     "Curtailment_Threshold_MW": config.curtailment_threshold_mw,
                     "Clipping_Loss_Factor": config.clipping_loss_factor,
                     "Availability": config.availability,
