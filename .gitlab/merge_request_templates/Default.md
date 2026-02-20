@@ -2,7 +2,8 @@
 
 <!-- Briefly describe what this MR does and why. Link any related issues. -->
 
-- 
+Closes #
+
 ---
 
 ## Pre-merge Checklist

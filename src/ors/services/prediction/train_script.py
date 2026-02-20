@@ -1,3 +1,5 @@
+"""CLI entry-point: train an XGBoost model and generate a PDF report in one command."""
+
 from __future__ import annotations
 
 import argparse
@@ -17,6 +19,12 @@ else:
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the training pipeline.
+
+    Returns:
+        Parsed argument namespace with project_root, model_name, and test_size.
+
+    """
     parser = argparse.ArgumentParser(description="Run training and generate a report.")
     parser.add_argument("--project-root", type=Path, default=None)
     parser.add_argument("--model-name", type=str, default="xgboost")
@@ -25,6 +33,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Run training pipeline: build merged dataset, train model, generate PDF report."""
     args = parse_args()
     project_root = args.project_root or find_project_root(Path.cwd())
 

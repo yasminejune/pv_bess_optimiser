@@ -1,3 +1,5 @@
+"""BMRS pipeline: fetch, normalise, and feature-engineer energy market data from Elexon API."""
+
 # bmrs_pipeline_modular.py
 # pip install requests pandas numpy python-dateutil
 
@@ -6,6 +8,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -151,7 +154,7 @@ def make_session() -> requests.Session:
 # =========================================================
 def to_dt(s: str) -> datetime:
     """Parse an ISO-8601 string and return UTC datetime."""
-    return parser.isoparse(s).astimezone(timezone.utc)
+    return cast(datetime, parser.isoparse(s).astimezone(timezone.utc))
 
 
 def to_isoz(dt: datetime) -> str:
@@ -165,7 +168,7 @@ def to_rfc3339_minute_z(dt: datetime) -> str:
     return dt_utc.strftime("%Y-%m-%dT%H:%MZ")
 
 
-def normalize_payload(payload) -> pd.DataFrame:
+def normalize_payload(payload: Any) -> pd.DataFrame:
     """Normalize BMRS payload into a pandas DataFrame.
 
     Supported payload styles:
@@ -188,7 +191,7 @@ def normalize_payload(payload) -> pd.DataFrame:
 
         return pd.json_normalize([payload])
 
-    return pd.DataFrame()
+    return pd.DataFrame()  # payload is neither list nor dict; return empty frame
 
 
 # =========================================================
@@ -582,13 +585,16 @@ def numeric_ts_frame(df: pd.DataFrame, prefix: str) -> pd.DataFrame:
     return w
 
 
-def mid_feature_frame(df_mid_raw: pd.DataFrame, prefix: str = "price_mid"):
+def mid_feature_frame(
+    df_mid_raw: pd.DataFrame, prefix: str = "price_mid"
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build MID-specific features and native MID tables.
 
     Returns:
     - features wide frame indexed by ts
     - native long frame
     - native wide frame with ts column
+
     """
     if df_mid_raw.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -712,14 +718,18 @@ def resample_15m(df: pd.DataFrame, mode: str) -> pd.DataFrame:
 # =========================================================
 # FEATURE BUILDERS PER ENDPOINT TYPE
 # =========================================================
-def build_features_price_mid(raw: pd.DataFrame, spec: EndpointSpec):
+def build_features_price_mid(
+    raw: pd.DataFrame, spec: EndpointSpec
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build MID features and resample to 15m."""
     feats, mid_long_native, mid_wide_native = mid_feature_frame(raw, prefix=spec.name)
     rs = resample_15m(feats, mode=spec.mode)
     return rs, mid_long_native, mid_wide_native
 
 
-def build_features_generic(raw: pd.DataFrame, spec: EndpointSpec):
+def build_features_generic(
+    raw: pd.DataFrame, spec: EndpointSpec
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build generic numeric features and resample to 15m."""
     feats = numeric_ts_frame(raw, prefix=spec.name)
     rs = resample_15m(feats, mode=spec.mode)
@@ -729,9 +739,9 @@ def build_features_generic(raw: pd.DataFrame, spec: EndpointSpec):
 # =========================================================
 # FINAL POST-PROCESSING
 # =========================================================
-def choose_target_price_col(columns) -> str | None:
+def choose_target_price_col(columns: list[str] | pd.Index) -> str | None:
     """Pick the best available target price column by priority."""
-    cols = list(columns)
+    cols: list[str] = list(columns)  # pandas Index is iterable over str
     lower = {c: c.lower() for c in cols}
 
     priorities = [
@@ -773,7 +783,7 @@ def add_calendar_and_lags(dataset: pd.DataFrame) -> pd.DataFrame:
 # =========================================================
 # I/O HELPERS (CSV ONLY)
 # =========================================================
-def save_csv_if_needed(df: pd.DataFrame, path: str, enabled: bool, index: bool = False):
+def save_csv_if_needed(df: pd.DataFrame, path: str, enabled: bool, index: bool = False) -> None:
     """Save DataFrame as CSV if enabled and non-empty."""
     if enabled and not df.empty:
         df.to_csv(path, index=index)
@@ -847,12 +857,15 @@ def export_price_model_csv_from_merged(
 # =========================================================
 # MAIN PIPELINE
 # =========================================================
-def build_bmrs_dataset_15m_all(cfg: PipelineConfig):
+def build_bmrs_dataset_15m_all(
+    cfg: PipelineConfig,
+) -> tuple[pd.DataFrame | None, dict[str, str]]:
     """Run complete BMRS pipeline and generate output files.
 
     Notes:
     - Parquet output has intentionally been removed.
     - All generated files are CSV.
+
     """
     os.makedirs(cfg.out_dir, exist_ok=True)
 

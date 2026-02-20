@@ -1,3 +1,9 @@
+"""Client utilities for fetching weather data from the Open-Meteo API."""
+
+from __future__ import annotations
+
+from typing import Any
+
 import openmeteo_requests
 import pandas as pd
 import requests_cache
@@ -8,7 +14,7 @@ FORECAST_API_URL = "https://api.open-meteo.com/v1/forecast"
 ARCHIVE_API_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 
-DEFAULT_PARAMS = {
+DEFAULT_PARAMS: dict[str, Any] = {
     "latitude": 54.727592,
     "longitude": -2.6679993,
     "hourly": [
@@ -62,19 +68,35 @@ DEFAULT_PARAMS = {
 
 
 class WeatherFetcherError(Exception):
-    # Raised when weather data fetching or formatting fails in a controlled way
-    pass
+    """Raised when weather data fetching or formatting fails in a controlled way."""
 
 
-def make_client():
-    # Create Open-Meteo client with cache + retry
+def make_client() -> Any:
+    """Create an Open-Meteo API client with caching and retry support.
+
+    Returns:
+        Configured openmeteo_requests Client instance.
+
+    """
     cache_session = requests_cache.CachedSession(".cache", expire_after=3600)
     retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
     return openmeteo_requests.Client(session=retry_session)
 
 
-def fetch_forecast(client, params=None):
-    # Fetch forecast (current/hourly/daily) and return the first response object
+def fetch_forecast(client: Any, params: dict[str, Any] | None = None) -> Any:
+    """Fetch the current/hourly/daily forecast and return the first API response object.
+
+    Args:
+        client: Open-Meteo client created by :func:`make_client`.
+        params: API request parameters; defaults to :data:`DEFAULT_PARAMS` when ``None``.
+
+    Returns:
+        The first Open-Meteo response object returned by the API.
+
+    Raises:
+        WeatherFetcherError: If the API returns an empty response list.
+
+    """
     if params is None:
         params = DEFAULT_PARAMS
 
@@ -84,8 +106,31 @@ def fetch_forecast(client, params=None):
     return responses[0]
 
 
-def fetch_hist_hourly(client, latitude, longitude, start_date, end_date, hourly_vars):
-    # Fetch historical hourly data from Open-Meteo Archive API and return a DataFrame
+def fetch_hist_hourly(
+    client: Any,
+    latitude: float,
+    longitude: float,
+    start_date: str,
+    end_date: str,
+    hourly_vars: list[str],
+) -> pd.DataFrame:
+    """Fetch historical hourly data from the Open-Meteo Archive API.
+
+    Args:
+        client: Open-Meteo client created by :func:`make_client`.
+        latitude: Latitude of the target location in decimal degrees.
+        longitude: Longitude of the target location in decimal degrees.
+        start_date: Inclusive start date in ``YYYY-MM-DD`` format.
+        end_date: Inclusive end date in ``YYYY-MM-DD`` format.
+        hourly_vars: List of Open-Meteo hourly variable names to request.
+
+    Returns:
+        DataFrame with a ``timestamp_utc`` column plus one column per requested variable.
+
+    Raises:
+        WeatherFetcherError: If the API returns an empty response list.
+
+    """
     params = {
         "latitude": latitude,
         "longitude": longitude,
@@ -104,8 +149,31 @@ def fetch_hist_hourly(client, latitude, longitude, start_date, end_date, hourly_
     return to_hourly_df(responses[0], hourly_vars)
 
 
-def fetch_hist_daily(client, latitude, longitude, start_date, end_date, daily_vars):
-    # Fetch historical daily data from Open-Meteo Archive API and return a DataFrame
+def fetch_hist_daily(
+    client: Any,
+    latitude: float,
+    longitude: float,
+    start_date: str,
+    end_date: str,
+    daily_vars: list[str],
+) -> pd.DataFrame:
+    """Fetch historical daily data from the Open-Meteo Archive API.
+
+    Args:
+        client: Open-Meteo client created by :func:`make_client`.
+        latitude: Latitude of the target location in decimal degrees.
+        longitude: Longitude of the target location in decimal degrees.
+        start_date: Inclusive start date in ``YYYY-MM-DD`` format.
+        end_date: Inclusive end date in ``YYYY-MM-DD`` format.
+        daily_vars: List of Open-Meteo daily variable names to request.
+
+    Returns:
+        DataFrame with a ``date_utc`` column plus one column per requested variable.
+
+    Raises:
+        WeatherFetcherError: If the API returns an empty response list.
+
+    """
     params = {
         "latitude": latitude,
         "longitude": longitude,
@@ -124,9 +192,20 @@ def fetch_hist_daily(client, latitude, longitude, start_date, end_date, daily_va
     return to_daily_df(responses[0], daily_vars)
 
 
-def to_hourly_df(api_response, hourly_vars):
-    # Build hourly forecast/history into a clean DataFrame
+def to_hourly_df(api_response: Any, hourly_vars: list[str]) -> pd.DataFrame:
+    """Build an hourly forecast or history API response into a clean DataFrame.
 
+    Args:
+        api_response: Open-Meteo response object containing an hourly data block.
+        hourly_vars: Ordered list of variable names corresponding to the response variables.
+
+    Returns:
+        DataFrame with a ``timestamp_utc`` column and one column per variable.
+
+    Raises:
+        WeatherFetcherError: If the response has no hourly block or a variable is missing.
+
+    """
     # Real Open-Meteo response has Hourly()
     if hasattr(api_response, "Hourly"):
         hourly_block = api_response.Hourly()
@@ -164,8 +243,17 @@ def to_hourly_df(api_response, hourly_vars):
     return pd.DataFrame(data=data)
 
 
-def to_daily_df(api_response, daily_vars):
-    # Build daily forecast/history into a clean DataFrame
+def to_daily_df(api_response: Any, daily_vars: list[str]) -> pd.DataFrame:
+    """Build a daily forecast or history API response into a clean DataFrame.
+
+    Args:
+        api_response: Open-Meteo response object containing a daily data block.
+        daily_vars: Ordered list of variable names corresponding to the response variables.
+
+    Returns:
+        DataFrame with a ``date_utc`` column and one column per variable.
+
+    """
     daily_block = api_response.Daily()
 
     dates = pd.date_range(
@@ -190,8 +278,17 @@ def to_daily_df(api_response, daily_vars):
     return pd.DataFrame(data=data)
 
 
-def to_current(api_response, current_vars):
-    # Build current conditions into a dict
+def to_current(api_response: Any, current_vars: list[str]) -> dict[str, Any]:
+    """Build current-conditions data from an API response into a plain dictionary.
+
+    Args:
+        api_response: Open-Meteo response object containing a current data block.
+        current_vars: Ordered list of variable names corresponding to the current variables.
+
+    Returns:
+        Dictionary with ``time_unix``, ``time_utc``, and one entry per variable.
+
+    """
     current_block = api_response.Current()
 
     out = {}
@@ -205,8 +302,8 @@ def to_current(api_response, current_vars):
     return out
 
 
-def main():
-    # Run forecast + historical pipeline and save datasets
+def main() -> None:
+    """Run the full forecast and historical data pipeline and save the datasets to CSV."""
     client = make_client()
 
     # Forecast

@@ -12,6 +12,7 @@ def pv_site_config_to_spec(config: PVSiteConfig) -> PVSpec:
 
     Returns:
         PV specification compatible with domain models
+
     """
     # Convert MW to kW
     rated_power_kw = config.pv_capacity_ac_mw * 1000.0
