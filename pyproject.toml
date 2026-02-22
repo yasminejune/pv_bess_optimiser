@@ -57,6 +57,9 @@ docs = [
     "sphinx>=7.0.0",
     "sphinx-rtd-theme>=2.0.0",
 ]
+api = [
+    "urllib>= 1.26",
+]
 all = [
     "ors-bess-optimizer[dev,ml,solvers,docs]",
 ]
@@ -87,6 +90,7 @@ markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
 ]
+pythonpath = ["src"]
 
 [tool.coverage.run]
 source = ["src"]

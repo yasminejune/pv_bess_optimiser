@@ -212,7 +212,7 @@ def test_report_generator_functions_and_main(
 
     assert rg.find_project_root(project_root / "Data") == project_root
     with pytest.raises(FileNotFoundError):
-        rg.find_project_root(Path("C:/"))
+        rg.find_project_root(Path(tmp_path.anchor) / "nonexistent")
 
     models_dir = project_root / "Prediction" / "Models"
     assert rg.find_latest_run_dir(models_dir) is None
