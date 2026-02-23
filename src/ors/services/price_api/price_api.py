@@ -1,3 +1,9 @@
+"""Price API client and access helpers.
+
+This module provides the logic to query the Price API for current pricing data and
+to handle request/response parsing, validation, and integration-related errors.
+"""
+
 # price_api.py
 
 
@@ -109,9 +115,13 @@ def to_dt_utc(x: str | datetime) -> datetime:
     Returns:
         datetime: UTC-aware datetime.
     """
-    if isinstance(x, datetime):
-        return x.astimezone(timezone.utc)
-    return parser.isoparse(x).astimezone(timezone.utc)
+    dt = x if isinstance(x, datetime) else parser.isoparse(x)
+
+    # Ensure timezone-aware
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(timezone.utc)
 
 
 def to_isoz(dt: datetime) -> str:

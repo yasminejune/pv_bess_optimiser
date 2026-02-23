@@ -153,15 +153,15 @@ def test_bmrs_get_first_success_returns_first_empty_when_all_empty(monkeypatch):
 
 
 def test_bmrs_get_first_success_raises_last_error_when_all_error(monkeypatch):
-    class Boom(Exception):
+    class BoomError(Exception):
         pass
 
     def fake_bmrs_get(session, base_url, path, params, timeout=60):
-        raise Boom(f"boom {params}")
+        raise BoomError(f"boom_error {params}")
 
     monkeypatch.setattr(pa, "bmrs_get", fake_bmrs_get)
 
-    with pytest.raises(Boom):
+    with pytest.raises(BoomError):
         pa.bmrs_get_first_success(
             session=object(),
             base_url="b",
@@ -425,10 +425,10 @@ def test_safe_call_continue_on_error_true_returns_empty_and_warns(tmp_path, caps
     )
     b = pah.PriceHistoryBuilder(cfg)
 
-    def boom():
+    def boom_error():
         raise RuntimeError("nope")
 
-    out = b._safe_call(boom)
+    out = b._safe_call(boom_error)
     assert out.empty
     assert "[WARN] Call failed" in capsys.readouterr().out
 
@@ -443,11 +443,11 @@ def test_safe_call_continue_on_error_false_raises(tmp_path):
     )
     b = pah.PriceHistoryBuilder(cfg)
 
-    def boom():
+    def boom_error():
         raise RuntimeError("nope")
 
     with pytest.raises(RuntimeError):
-        b._safe_call(boom)
+        b._safe_call(boom_error)
 
 
 def test_fetch_in_chunks_appends_only_non_empty_and_logs_every_10(tmp_path, capsys):

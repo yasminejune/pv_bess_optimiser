@@ -1,3 +1,9 @@
+"""Historical price retrieval and processing.
+
+This module contains the logic to fetch, normalize, and validate historical price
+series used by other components of the system.
+"""
+
 # price_api_hist.py
 from __future__ import annotations
 
