@@ -100,6 +100,7 @@ omit = [
     "*/__pycache__/*",
     "*/venv/*",
     "*/.venv/*",
+    "src/ors/services/prediction/tft_day_ahead_15min_forecasting.ipynb",
 ]
 
 [tool.coverage.report]
@@ -131,6 +132,7 @@ extend-exclude = '''
   | \.venv
   | build
   | dist
+  | src/ors/services/prediction/tft_day_ahead_15min_forecasting\.ipynb
 )/
 '''
 
@@ -138,6 +140,7 @@ extend-exclude = '''
 line-length = 100
 target-version = "py310"
 src = ["src", "tests"]
+exclude = ["src/ors/services/prediction/tft_day_ahead_15min_forecasting.ipynb"]
 
 [tool.ruff.lint]
 select = [
@@ -210,6 +213,7 @@ exclude = [
     "^dist/",
     # Pyomo script is a standalone module with no type stubs available
     "src/ors/services/optimizer/optimizer\\.py",
+    "src/ors/services/prediction/tft_day_ahead_15min_forecasting\\.ipynb",
 ]
 
 [[tool.mypy.overrides]]
