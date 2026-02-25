@@ -1,5 +1,5 @@
 Expected columns for price_data:
-price, demand_istdo, Timestamp, demand_indo, demand_indeem
+price, demand_itsdo, Timestamp, demand_indo, demand_inddem
 
 Expected columns for historical_hourly:
 Timestamp, temperature_2m, relative_humidity_2m, dew_point_2m, precipitation, rain, snowfall, cloud_cover, cloud_cover_low, cloud_cover_mid, cloud_cover_high, is_day, shortwave_radiation, direct_radiation, wind_speed_10m, wind_gusts_10m, wind_direction_10m, surface_pressure, weather_code

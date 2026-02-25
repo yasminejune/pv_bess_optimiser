@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -333,6 +334,13 @@ def train_and_save_from_dataframe(
     metadata_path = run_dir / "metadata.json"
 
     model.save_model(model_path)
+
+    # Also write a .pkl copy to the standard inference path
+    inference_pkl = project_root / "models" / "price_prediction" / "model.pkl"
+    inference_pkl.parent.mkdir(parents=True, exist_ok=True)
+    with open(inference_pkl, "wb") as fh:
+        pickle.dump(model, fh)
+    print("Inference model saved to:", inference_pkl)
     save_metrics(metrics, metrics_path)
     save_predictions(df.loc[y_test.index, "Timestamp"], y_test, model.predict(x_test), preds_path)
     save_feature_importance(model, features, importance_path)

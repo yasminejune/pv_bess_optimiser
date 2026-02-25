@@ -176,6 +176,14 @@ def transform_price_data(price_data: pd.DataFrame) -> pd.DataFrame:
         Hourly-aggregated price DataFrame.
 
     """
+    # Normalise legacy typo column names that appeared in the original training CSV
+    price_data = price_data.rename(
+        columns={
+            "demand_istdo": "demand_itsdo",
+            "demand_indeem": "demand_inddem",
+        }
+    )
+
     columns_to_drop = [
         col for col in ["hour", "dayofweek", "month", "is_weekend"] if col in price_data.columns
     ]
@@ -294,9 +302,12 @@ def add_lagged_features(
     numeric_cols = dataframe.select_dtypes(include=["number", "bool"]).columns
     numeric_cols = [col for col in numeric_cols if col != "Timestamp"]
 
-    for col in numeric_cols:
-        for step in lag_steps:
-            dataframe[f"{col}_lag_{step}h"] = dataframe[col].shift(step)
+    lag_frames = [
+        dataframe[col].shift(step).rename(f"{col}_lag_{step}h")
+        for col in numeric_cols
+        for step in lag_steps
+    ]
+    dataframe = pd.concat([dataframe, *lag_frames], axis=1)
 
     if drop_na:
         max_lag = max(lag_steps) if lag_steps else 0
