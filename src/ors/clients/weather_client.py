@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import openmeteo_requests
 import pandas as pd
 import requests_cache
+from openmeteo_requests import Client
+from openmeteo_sdk.WeatherApiResponse import WeatherApiResponse
 from retry_requests import retry
 
-# API endpoints, global constants
-FORECAST_API_URL = "https://api.open-meteo.com/v1/forecast"
-ARCHIVE_API_URL = "https://archive-api.open-meteo.com/v1/archive"
+from ors.config.api_endpoints import ARCHIVE_API_URL, FORECAST_API_URL
 
-
-DEFAULT_PARAMS: dict[str, Any] = {
+DEFAULT_PARAMS = {
     "latitude": 54.727592,
     "longitude": -2.6679993,
     "hourly": [
@@ -71,7 +71,7 @@ class WeatherFetcherError(Exception):
     """Raised when weather data fetching or formatting fails in a controlled way."""
 
 
-def make_client() -> Any:
+def make_client() -> Client | None:
     """Create an Open-Meteo API client with caching and retry support.
 
     Returns:
@@ -83,7 +83,7 @@ def make_client() -> Any:
     return openmeteo_requests.Client(session=retry_session)
 
 
-def fetch_forecast(client: Any, params: dict[str, Any] | None = None) -> Any:
+def fetch_forecast(client: Client, params: dict[str, Any] | None = None) -> Any:
     """Fetch the current/hourly/daily forecast and return the first API response object.
 
     Args:
@@ -107,7 +107,7 @@ def fetch_forecast(client: Any, params: dict[str, Any] | None = None) -> Any:
 
 
 def fetch_hist_hourly(
-    client: Any,
+    client: Client,
     latitude: float,
     longitude: float,
     start_date: str,
@@ -150,7 +150,7 @@ def fetch_hist_hourly(
 
 
 def fetch_hist_daily(
-    client: Any,
+    client: Client,
     latitude: float,
     longitude: float,
     start_date: str,
@@ -192,7 +192,7 @@ def fetch_hist_daily(
     return to_daily_df(responses[0], daily_vars)
 
 
-def to_hourly_df(api_response: Any, hourly_vars: list[str]) -> pd.DataFrame:
+def to_hourly_df(api_response: WeatherApiResponse, hourly_vars: list[str]) -> pd.DataFrame:
     """Build an hourly forecast or history API response into a clean DataFrame.
 
     Args:
@@ -235,7 +235,8 @@ def to_hourly_df(api_response: Any, hourly_vars: list[str]) -> pd.DataFrame:
 
         if len(values) != len(timestamps):
             raise WeatherFetcherError(
-                f"Length mismatch for {var_name}: {len(values)} values vs {len(timestamps)} timestamps"
+                f"Length mismatch for {var_name}: "
+                f"{len(values)} values vs {len(timestamps)} timestamps"
             )
 
         data[var_name] = values
@@ -243,7 +244,121 @@ def to_hourly_df(api_response: Any, hourly_vars: list[str]) -> pd.DataFrame:
     return pd.DataFrame(data=data)
 
 
-def to_daily_df(api_response: Any, daily_vars: list[str]) -> pd.DataFrame:
+def solar_radiance_15_mins(
+    client: Client,
+    start_datetime: datetime | None = None,
+    end_datetime: datetime | None = None,
+) -> pd.DataFrame:
+    """Fetch 15-minute solar radiance data for PV power generation modeling.
+
+    Requests data from the Open-Meteo Forecast API and trims the response to
+    the ``[start_datetime, end_datetime]`` window.  The API returns data from
+    the start of the day, so rows before *start_datetime* are discarded.  Rows
+    after *end_datetime* are likewise discarded.
+
+    If the value at *start_datetime* is null (i.e. too far in the future for
+    the model to have a prediction), a :class:`WeatherFetcherError` is raised.
+    Any other null values between start and end are silently dropped.
+
+    Args:
+        client: Open-Meteo client created by :func:`make_client`.
+        start_datetime: Timezone-aware start of the requested window (inclusive).
+            Defaults to the current UTC time.
+        end_datetime: Timezone-aware end of the requested window (inclusive).
+            Defaults to 48 hours after *start_datetime*.
+
+    Returns:
+        DataFrame with ``timestamp_utc`` and ``shortwave_radiation`` columns
+        at 15-minute intervals, containing only rows with valid radiation data
+        within the requested time window.
+
+    Raises:
+        WeatherFetcherError: If the API returns an empty response, or if the
+            value at *start_datetime* is null (start is too far in the future).
+
+    """
+    if start_datetime is None:
+        start_datetime = datetime.now(tz=timezone.utc)
+    if end_datetime is None:
+        end_datetime = start_datetime + timedelta(hours=48)
+
+    if start_datetime > end_datetime:
+        raise WeatherFetcherError(
+            f"start_datetime ({start_datetime}) must not be after end_datetime ({end_datetime})"
+        )
+
+    # Calculate the number of 15-minute timesteps from the start of the
+    # start day until the end datetime (the API returns data from midnight).
+    start_of_day = start_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
+    total_seconds = (end_datetime - start_of_day).total_seconds()
+    timesteps = int(total_seconds / (15 * 60)) + 1
+
+    params: dict[str, Any] = {
+        "latitude": DEFAULT_PARAMS["latitude"],
+        "longitude": DEFAULT_PARAMS["longitude"],
+        "minutely_15": ["shortwave_radiation"],
+        "forecast_minutely_15": timesteps,
+        "models": "ukmo_uk_deterministic_2km",
+        "timezone": "GMT",
+    }
+
+    try:
+        responses = client.weather_api(FORECAST_API_URL, params=params)
+    except Exception as e:
+        raise WeatherFetcherError(
+            f"Open-Meteo API request failed for solar radiance "
+            f"(start={start_datetime}, end={end_datetime}, timesteps={timesteps}): {e}"
+        ) from e
+
+    if not responses:
+        raise WeatherFetcherError(
+            "No responses returned from Open-Meteo Forecast API for solar radiance."
+        )
+
+    api_response = responses[0]
+    minutely_block = api_response.Minutely15()
+
+    timestamps = pd.date_range(
+        start=pd.to_datetime(minutely_block.Time(), unit="s", utc=True),
+        end=pd.to_datetime(minutely_block.TimeEnd(), unit="s", utc=True),
+        freq=pd.Timedelta(minutes=15),
+        inclusive="left",
+    )
+
+    data = {
+        "timestamp_utc": timestamps,
+        "shortwave_radiation": pd.to_numeric(
+            minutely_block.Variables(0).ValuesAsNumpy(),
+            errors="coerce",
+        ),
+    }
+
+    df = pd.DataFrame(data=data)
+
+    # Trim some rows may be outside the requested window, so filter to the window
+    df = df[(df["timestamp_utc"] >= start_datetime) & (df["timestamp_utc"] <= end_datetime)]
+
+    if df.empty:
+        raise WeatherFetcherError(
+            "No data available for the requested time window "
+            f"[{start_datetime}, {end_datetime}]."
+        )
+
+    # Check that the first row (at start_datetime) has a valid value
+    first_value = df.iloc[0]["shortwave_radiation"]
+    if pd.isna(first_value):
+        raise WeatherFetcherError(
+            f"No forecast data available at start_datetime ({start_datetime}). "
+            "The requested time may be too far in the future."
+        )
+
+    # Drop any remaining rows with null radiation values
+    df = df.dropna(subset=["shortwave_radiation"]).reset_index(drop=True)
+
+    return df
+
+
+def to_daily_df(api_response: WeatherApiResponse, daily_vars: list[str]) -> pd.DataFrame:
     """Build a daily forecast or history API response into a clean DataFrame.
 
     Args:
@@ -278,7 +393,7 @@ def to_daily_df(api_response: Any, daily_vars: list[str]) -> pd.DataFrame:
     return pd.DataFrame(data=data)
 
 
-def to_current(api_response: Any, current_vars: list[str]) -> dict[str, Any]:
+def to_current(api_response: WeatherApiResponse, current_vars: list[str]) -> dict[str, Any]:
     """Build current-conditions data from an API response into a plain dictionary.
 
     Args:
@@ -291,7 +406,7 @@ def to_current(api_response: Any, current_vars: list[str]) -> dict[str, Any]:
     """
     current_block = api_response.Current()
 
-    out = {}
+    out: dict[str, Any] = {}
     time_unix = int(current_block.Time())
     out["time_unix"] = time_unix
     out["time_utc"] = pd.to_datetime(time_unix, unit="s", utc=True)
@@ -300,63 +415,3 @@ def to_current(api_response: Any, current_vars: list[str]) -> dict[str, Any]:
         out[var_name] = current_block.Variables(i).Value()
 
     return out
-
-
-def main() -> None:
-    """Run the full forecast and historical data pipeline and save the datasets to CSV."""
-    client = make_client()
-
-    # Forecast
-    api_response = fetch_forecast(client, DEFAULT_PARAMS)
-
-    current = to_current(api_response, DEFAULT_PARAMS["current"])
-    hourly_df = to_hourly_df(api_response, DEFAULT_PARAMS["hourly"])
-    daily_df = to_daily_df(api_response, DEFAULT_PARAMS["daily"])
-
-    print("Current:")
-    for k, v in current.items():
-        print(f"  {k}: {v}")
-
-    print("\nForecast hourly rows:", len(hourly_df))
-    print("Forecast daily rows:", len(daily_df))
-
-    # Historical: 3 years starting from 2023
-    start_date = "2023-01-01"
-    end_date = "2025-12-31"
-
-    hist_hourly = fetch_hist_hourly(
-        client=client,
-        latitude=DEFAULT_PARAMS["latitude"],
-        longitude=DEFAULT_PARAMS["longitude"],
-        start_date=start_date,
-        end_date=end_date,
-        hourly_vars=DEFAULT_PARAMS["hourly"],
-    )
-
-    hist_daily = fetch_hist_daily(
-        client=client,
-        latitude=DEFAULT_PARAMS["latitude"],
-        longitude=DEFAULT_PARAMS["longitude"],
-        start_date=start_date,
-        end_date=end_date,
-        daily_vars=DEFAULT_PARAMS["daily"],
-    )
-
-    # Save files
-    hourly_path = "data/historical_hourly_2023_2025.csv"
-    daily_path = "data/historical_daily_2023_2025.csv"
-
-    hist_hourly.to_csv(hourly_path, index=False)
-    hist_daily.to_csv(daily_path, index=False)
-
-    print(f"\nSaved: {hourly_path}")
-    print(f"Saved: {daily_path}")
-    print("\nHistorical hourly rows:", len(hist_hourly))
-    print("Historical daily rows:", len(hist_daily))
-
-
-# Backwards-compatible function names expected by tests
-build_hourly_dataframe = to_hourly_df
-
-if __name__ == "__main__":
-    main()

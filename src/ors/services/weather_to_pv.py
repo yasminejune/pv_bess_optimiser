@@ -7,19 +7,23 @@ Goal:
 - Fetch hourly Open-Meteo weather via existing client code.
 - Transform weather data into PVTelemetry.
 - Feed telemetry into update_pv_state to produce PVState values.
+- Provide date-range power generation from a PVSiteConfig.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime
+from typing import Any, cast
 
 import pandas as pd
 
-from ors.clients import weather_fetcher
+from ors.clients import weather_client
+from ors.config.pv_config import PVSiteConfig
 from ors.domain.models.pv import PVSpec, PVState, PVTelemetry
 from ors.services.pv_status import update_pv_state
+from ors.utils.pv_converter import pv_site_config_to_spec
 
 
 @dataclass(frozen=True)
@@ -48,7 +52,7 @@ def hourly_weather_df_to_pv_telemetry(
 ) -> list[PVTelemetry]:
     """Convert an Open-Meteo hourly DataFrame into PVTelemetry objects.
 
-    Expected input (from weather_fetcher.to_hourly_df):
+    Expected input (from weather_client.to_hourly_df):
         - timestamp_utc: timezone-aware timestamps
         - shortwave_radiation: W/m^2
 
@@ -133,20 +137,78 @@ def fetch_live_pv_states_from_openmeteo(
         4. Produce PVState outputs via PV model logic.
     """
     if client is None:
-        client = weather_fetcher.make_client()
+        client = weather_client.make_client()
 
     if params is None:
-        params = weather_fetcher.DEFAULT_PARAMS
+        params = weather_client.DEFAULT_PARAMS
 
-    api_resp = weather_fetcher.fetch_forecast(client, params)
+    api_resp = weather_client.fetch_forecast(client, params)  # type: ignore[arg-type]
 
-    hourly_df = weather_fetcher.to_hourly_df(
+    hourly_vars = cast(list[str], params["hourly"])
+    hourly_df = weather_client.to_hourly_df(
         api_resp,
-        params["hourly"],
+        hourly_vars,
     )
 
     return pv_states_from_hourly_weather_df(
         spec,
         hourly_df,
         timestep_minutes=timestep_minutes,
+    )
+
+
+def generate_pv_power_for_date_range(
+    config: PVSiteConfig,
+    *,  # this forces all following args to be passed as keywords, improving readability and reducing errors
+    client: Any | None = None,
+    start_datetime: datetime | None = None,
+    end_datetime: datetime | None = None,
+) -> pd.DataFrame:
+    """Generate 15-minute PV power output for a datetime range.
+
+    Fetches 15-minute solar irradiance forecasts from the Open-Meteo API,
+    converts the site configuration to a domain specification, and applies
+    PV power calculation logic to produce generation estimates.
+
+    Args:
+        config: PV site configuration (MW units). Use a predefined config
+            from :data:`ors.config.pv_config.PV_SITE_CONFIGS` or create a
+            custom :class:`~ors.config.pv_config.PVSiteConfig`.
+        client: Open-Meteo client; created automatically when ``None``.
+        start_datetime: Timezone-aware start of the requested window.
+            Defaults to the current UTC time.
+        end_datetime: Timezone-aware end of the requested window.
+            Defaults to 48 hours after *start_datetime*.
+
+    Returns:
+        DataFrame with ``timestamp_utc`` and ``generation_kw`` columns
+        at 15-minute intervals.
+
+    Raises:
+        WeatherFetcherError: If the weather API call fails or returns
+            no data for the requested window.
+
+    """
+    if client is None:
+        client = weather_client.make_client()
+
+    solar_df = weather_client.solar_radiance_15_mins(
+        client,  # type: ignore[arg-type]
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+    )
+
+    spec: PVSpec = pv_site_config_to_spec(config)
+
+    states = pv_states_from_hourly_weather_df(
+        spec,
+        solar_df,
+        timestep_minutes=15,
+    )
+
+    return pd.DataFrame(
+        {
+            "timestamp_utc": [s.timestamp for s in states],
+            "generation_kw": [s.generation_kw for s in states],
+        }
     )

@@ -103,6 +103,7 @@ class PVState:
         curtailed: Whether curtailment is active
         exportable_kw: Power available for export (kW)
         exportable_kwh: Energy available for export this timestep (kWh)
+        solar_radiance_kw_per_m2: Input solar irradiance (kW/m²). None if unavailable.
         estimated_from_radiance: Whether generation was estimated from radiance
         quality_flags: Set of quality issue flags
 
@@ -115,5 +116,6 @@ class PVState:
     curtailed: bool
     exportable_kw: float
     exportable_kwh: float
+    solar_radiance_kw_per_m2: float | None
     estimated_from_radiance: bool
     quality_flags: set[str] = field(default_factory=set)

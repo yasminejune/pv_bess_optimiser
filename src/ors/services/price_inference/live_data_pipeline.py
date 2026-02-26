@@ -10,10 +10,11 @@ feature-compatible with the trained model.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 import pandas as pd
 
-from ors.clients.weather_fetcher import (
+from ors.clients.weather_client import (
     DEFAULT_PARAMS,
     fetch_forecast,
     make_client,
@@ -48,6 +49,7 @@ PRICE_LOOKBACK_HOURS: int = 48
 
 # Fetch
 
+
 def _fetch_live_weather(
     past_hours: int = PRICE_LOOKBACK_HOURS,
     forecast_days: int = 2,
@@ -68,9 +70,12 @@ def _fetch_live_weather(
         "forecast_hours": forecast_days * 24,
     }
     client = make_client()
+    assert client is not None  # make_client always returns a Client
     api_response = fetch_forecast(client, params)
-    hourly_df = to_hourly_df(api_response, DEFAULT_PARAMS["hourly"])
-    daily_df = to_daily_df(api_response, DEFAULT_PARAMS["daily"])
+    hourly_vars = cast(list[str], DEFAULT_PARAMS["hourly"])
+    daily_vars = cast(list[str], DEFAULT_PARAMS["daily"])
+    hourly_df = to_hourly_df(api_response, hourly_vars)
+    daily_df = to_daily_df(api_response, daily_vars)
     return hourly_df, daily_df
 
 
@@ -120,6 +125,7 @@ def _fetch_live_price(
 
 
 # Merge the data as expected by the model
+
 
 def build_live_merged_dataset(
     past_hours: int = PRICE_LOOKBACK_HOURS,
@@ -200,9 +206,7 @@ def build_live_merged_dataset(
     price_data = price_data.loc[price_data["Timestamp"] >= start_date].copy()
 
     # 4. Generate time features for the full window (past + future)
-    time_data = generate_time_data(
-        start_date=start_date, end_date=end_date, country_holidays="UK"
-    )
+    time_data = generate_time_data(start_date=start_date, end_date=end_date, country_holidays="UK")
 
     # 5. Apply per-source ETL transforms (identical to offline pipeline)
     time_data = transform_time_data(time_data)

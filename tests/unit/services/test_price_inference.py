@@ -240,7 +240,9 @@ def _make_price_df(n: int = 48) -> pd.DataFrame:
 
 
 def test_build_live_merged_dataset_returns_dataframe(monkeypatch):
-    monkeypatch.setattr(ldp, "_fetch_live_weather", lambda **k: (_make_hourly_df(), _make_daily_df()))
+    monkeypatch.setattr(
+        ldp, "_fetch_live_weather", lambda **k: (_make_hourly_df(), _make_daily_df())
+    )
     monkeypatch.setattr(ldp, "_fetch_live_price", lambda **k: _make_price_df())
 
     result = ldp.build_live_merged_dataset(lag_steps=(1, 2))
@@ -251,7 +253,9 @@ def test_build_live_merged_dataset_returns_dataframe(monkeypatch):
 
 
 def test_build_live_merged_dataset_sorted_by_timestamp(monkeypatch):
-    monkeypatch.setattr(ldp, "_fetch_live_weather", lambda **k: (_make_hourly_df(), _make_daily_df()))
+    monkeypatch.setattr(
+        ldp, "_fetch_live_weather", lambda **k: (_make_hourly_df(), _make_daily_df())
+    )
     monkeypatch.setattr(ldp, "_fetch_live_price", lambda **k: _make_price_df())
 
     result = ldp.build_live_merged_dataset(lag_steps=(1,))
@@ -275,7 +279,9 @@ def test_build_live_merged_dataset_raises_on_no_overlap(monkeypatch):
 
 
 def test_build_live_merged_dataset_all_price_endpoints_unavailable(monkeypatch):
-    monkeypatch.setattr(ldp, "_fetch_live_weather", lambda **k: (_make_hourly_df(), _make_daily_df()))
+    monkeypatch.setattr(
+        ldp, "_fetch_live_weather", lambda **k: (_make_hourly_df(), _make_daily_df())
+    )
     monkeypatch.setattr(
         ldp,
         "_fetch_live_price",

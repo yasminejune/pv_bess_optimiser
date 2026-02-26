@@ -148,6 +148,7 @@ def update_pv_state(
         curtailed=curtailed,
         exportable_kw=exportable_kw,
         exportable_kwh=exportable_kwh,
+        solar_radiance_kw_per_m2=telemetry.solar_radiance_kw_per_m2,
         estimated_from_radiance=estimated_from_radiance,
         quality_flags=quality_flags,
     )

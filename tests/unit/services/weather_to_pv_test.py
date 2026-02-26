@@ -61,7 +61,7 @@ def test_pv_states_from_hourly_weather_df_estimates_energy() -> None:
     assert "estimated_from_radiance" in out[0].quality_flags
 
 
-def test_fetch_live_pv_states_from_openmeteo_uses_weather_fetcher(monkeypatch) -> None:
+def test_fetch_live_pv_states_from_openmeteo_uses_weather_client(monkeypatch) -> None:
     spec = _mk_spec()
     called = {"fetch": 0, "to_df": 0}
 
@@ -84,8 +84,8 @@ def test_fetch_live_pv_states_from_openmeteo_uses_weather_fetcher(monkeypatch) -
             }
         )
 
-    monkeypatch.setattr(integ.weather_fetcher, "fetch_forecast", fake_fetch_forecast)
-    monkeypatch.setattr(integ.weather_fetcher, "to_hourly_df", fake_to_hourly_df)
+    monkeypatch.setattr(integ.weather_client, "fetch_forecast", fake_fetch_forecast)
+    monkeypatch.setattr(integ.weather_client, "to_hourly_df", fake_to_hourly_df)
 
     params = {"hourly": ["shortwave_radiation"]}
     out = integ.fetch_live_pv_states_from_openmeteo(

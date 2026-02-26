@@ -233,3 +233,52 @@ has_quality_issues = len(pv_state.quality_flags) > 0
 - Directly modify PVSpec or PVState after creation
 - Implement your own PV validation logic—use this service
 - Assume generation_kw equals exportable_kw (respect export limits)
+
+---
+
+## Module: `weather_to_pv.py` — PV Power Generation
+
+### Function: `generate_pv_power_for_date_range`
+
+Generates 15-minute PV power output by fetching solar irradiance forecasts
+from the Open-Meteo API and applying the full PV model pipeline.
+
+**Signature:**
+```python
+def generate_pv_power_for_date_range(
+    config: PVSiteConfig,
+    *,
+    client: Any | None = None,
+    start_datetime: datetime | None = None,
+    end_datetime: datetime | None = None,
+) -> pd.DataFrame
+```
+
+**Quick Start:**
+```python
+from ors.config.pv_config import get_pv_config, SiteType
+from ors.services.weather_to_pv import generate_pv_power_for_date_range
+
+config = get_pv_config(SiteType.BURST_1)
+
+# Defaults to now -> now + 48 hours
+df = generate_pv_power_for_date_range(config=config)
+
+for _, row in df.iterrows():
+    print(f"{row['timestamp_utc']}: gen={row['generation_kw']:.1f} kW")
+```
+
+**Return Value — `pd.DataFrame`:**
+
+| Column | Type | Unit | Description |
+|---|---|---|---|
+| `timestamp_utc` | datetime (tz-aware) | — | UTC timestamp at 15-min intervals |
+| `generation_kw` | float | kW | Estimated generation after clamping/constraints |
+
+**Notes:**
+- Uses the Open-Meteo **forecast API** with the `ukmo_uk_deterministic_2km` model.
+- `start_datetime` defaults to the current UTC time; `end_datetime` defaults to start + 48 hours.
+- Requesting data too far in the future raises `WeatherFetcherError`.
+- All configuration capacities are in MW; output generation is in kW.
+- Panel area is derived automatically: `area = dc_capacity_kw / (1.0 × module_efficiency)`.
+- See `pv_generation_README.md` for full details, data flow diagrams, and usage examples.

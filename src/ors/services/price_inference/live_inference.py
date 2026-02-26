@@ -162,6 +162,7 @@ def select_forecast_rows(
 
 # Full pipeline (importable entry point)
 
+
 def run_inference(
     model_path: Path = MODEL_PATH,
     horizon_hours: int = HORIZON_HOURS,
@@ -223,8 +224,7 @@ def run_inference(
         freq="15min",
     )
     results = (
-        hourly_series
-        .reindex(hourly_series.index.union(idx_15min))
+        hourly_series.reindex(hourly_series.index.union(idx_15min))
         .ffill()
         .reindex(idx_15min)
         .reset_index()
@@ -245,6 +245,7 @@ def run_inference(
 
 
 # Main
+
 
 def main() -> None:
     """CLI entry point — parses arguments and delegates to run_inference."""

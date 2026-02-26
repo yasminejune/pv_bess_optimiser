@@ -16,5 +16,7 @@ from ors.services.price_inference import run_inference
 
 def main() -> None:
     return run_inference()
+
+
 if __name__ == "__main__":
     main()
