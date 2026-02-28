@@ -34,6 +34,12 @@ class DummyXGBRegressor:
         Path(path).write_text("dummy-model")
 
 
+class DummyModelWithImportances(DummyXGBRegressor):
+    def __init__(self):
+        super().__init__()
+        self.feature_importances_ = np.array([0.6, 0.4, 0.2])
+
+
 class FixedDateTime:
     @classmethod
     def now(cls) -> real_datetime:
@@ -171,12 +177,7 @@ def test_prediction_model_training_wrappers(
 
     monkeypatch.setattr(pm, "datetime", FixedDateTime)
 
-    class DummyModel(DummyXGBRegressor):
-        def __init__(self):
-            super().__init__()
-            self.feature_importances_ = np.array([0.6, 0.4, 0.2])
-
-    monkeypatch.setattr(pm, "train_xgb_regressor", lambda x, y: DummyModel())
+    monkeypatch.setattr(pm, "train_xgb_regressor", lambda x, y: DummyModelWithImportances())
 
     run_dir = pm.train_and_save_from_dataframe(tmp_path, df, model_name="xgb_test", test_size=0.25)
     assert (run_dir / "model.json").exists()

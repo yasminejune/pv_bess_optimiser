@@ -16,6 +16,7 @@
 # 2) Inputs (Given Data)
 - p_t : intraday electricity price at time t  
 - S_t ≥ 0 (MW): available solar power at time t  
+- p_30 : rolling 30-day average price for the first h_30 hours of the next cycle
 
 ---
 
@@ -41,7 +42,8 @@
 - E_cap = 100 MW × 6 h = 600 MWh  
 - E_min = 60 MWh (10%)  
 - E_max = 540 MWh (90%)  
-- Initial energy E_0 = 300 MWh (50%)  
+- Initial energy E_0 = 300 MWh (50%)
+- Hours needed to fully discharge the battery h_30 =  (E_max - E_min) / P_dis_max
 
 ---
 
@@ -161,12 +163,14 @@ E_1 = E_0 = 300
 
 ---
 
-# 7) Terminal Constraint (Prevent End-of-Day Dump)
+# 7) Future Energy Sale (Prevent End-of-Day Dump)
+Additional variable in maximization function which estimates the price of any remaining charge after the 24h period. This estimation is based on a rolling 30-day average for the first hours of the next cycle. The number of hours over which the model averages the price is set by the battery's capacity to discharge completely:
 
-E_T ≥ 0.4 · E_cap
+h_30 = (E_max - E_min) / P_dis_max
+p_30 = average 30-day rolling price over first h_30 hours of next cycle
 
-Since E_cap = 600 MWh:
-E_T ≥ 240 MWh
+We therefore add the following term to the maximisation function:
+(E_T - E_min) · p_30
 
 ---
 
@@ -174,21 +178,22 @@ E_T ≥ 240 MWh
 
 Maximize daily profit:
 
-max Σ_t p_t · ( P_dis_t + η_sol_sell · P_sol→sell_t − P_grid_t )
+max Σ_t ( p_t · ( P_dis_t + η_sol_sell · P_sol_sell_t − P_grid_t ) · Δt ) + (E_T - E_min) · p_30
 
 ---
 
 ## Objective Explanation
-- Battery discharge revenue: p_t · P_dis_t  
-- Solar direct sale revenue (net of losses): p_t · η_sol_sell · P_sol→sell_t  
-- Grid purchase cost: p_t · P_grid_t  
+- Battery discharge revenue: p_t · P_dis_t · Δt
+- Solar direct sale revenue (net of losses): p_t · η_sol_sell · P_sol→sell_t · Δt
+- Grid purchase cost: p_t · P_grid_t · Δt
+- All dispatch terms are in £ (MW × £/MWh × h). The terminal value term is also in £ (MWh × £/MWh), ensuring consistent weighting across the objective.
 - Solar sent to battery does not generate immediate revenue; its value is realized if later discharged.
 
 ---
 
 # 9) Cycle Counting Logic (Max 3 Cycles per Day)
 
-We count a cycle as: **a discharge segment that occurs after the battery has charged at least once since the last discharge**.
+We count a cycle as: **a discharge segment that occurs after the battery has charged at least once since the last discharge**. A new cycle count is triggered by charging.
 Idle time between charge and discharge does not create a new cycle.
 
 ## 9.1 Aggregate charge/discharge modes
