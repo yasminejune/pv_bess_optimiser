@@ -12,20 +12,22 @@ Run from the repo root::
 from __future__ import annotations
 
 import argparse
-import pickle
+import pickle  #models will be saved in this format
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from ors.services.prediction.data_pipeline import build_merged_dataset
 from ors.services.price_inference.live_data_pipeline import (
     PRICE_LOOKBACK_HOURS,
     build_live_merged_dataset,
 )
 
 # ---------------------------------------------------------------------------
-# Configuration — edit these values to change behaviour
+# Configuration
 # ---------------------------------------------------------------------------
 
 # Path to the pickled model file. Update this when testing a new model.
@@ -38,7 +40,7 @@ HORIZON_HOURS: int = 24
 LAG_STEPS: tuple[int, ...] = (1, 2, 3, 6, 12, 24)
 
 # Path to write the 15-minute predictions CSV consumed by the optimizer.
-OUTPUT_PATH: Path = Path("Data/live_price_predictions.csv")
+OUTPUT_PATH: Path = Path("data/live_price_predictions.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -136,21 +138,28 @@ def load_model(model_path: Path) -> Any:
 def select_forecast_rows(
     live_df: pd.DataFrame,
     horizon_hours: int,
+    reference_time: datetime | None = None,
 ) -> pd.DataFrame:
-    """Return the next horizon_hours rows starting from the current hour.
+    """Return the next horizon_hours rows starting from the reference hour.
 
-    Filters to rows whose Timestamp is at or after the current hour,
-    then takes the first horizon_hours of those. This ensures predictions
-    always start from now, not from stale past rows in the dataset.
+    Filters to rows whose Timestamp is at or after reference_time (or now in
+    live mode), then takes the first horizon_hours of those.
 
     Args:
         live_df: Full merged DataFrame sorted by Timestamp.
         horizon_hours: Number of forecast rows to return.
+        reference_time: If provided, use this as the start of the forecast
+            window instead of the current time.
 
     Returns:
-        First horizon_hours rows at or after the current hour.
+        First horizon_hours rows at or after the reference hour.
     """
-    now = pd.Timestamp.now().floor("h")
+    if reference_time is not None:
+        ts = pd.Timestamp(reference_time)
+        now = (ts.tz_convert(None) if ts.tzinfo is not None else ts).floor("h")
+    else:
+        now = pd.Timestamp.utcnow().tz_convert(None).floor("h")
+
     future_df = live_df[live_df["Timestamp"] >= now]
     forecast_df = future_df.head(horizon_hours).copy()
 
@@ -159,8 +168,7 @@ def select_forecast_rows(
 
     return forecast_df
 
-
-# Full pipeline (importable entry point)
+# Full pipeline (importable entry point for next modules)
 
 
 def run_inference(
@@ -168,30 +176,51 @@ def run_inference(
     horizon_hours: int = HORIZON_HOURS,
     lag_steps: tuple[int, ...] = LAG_STEPS,
     output_path: Path = OUTPUT_PATH,
+    reference_time: datetime | None = None,
+    use_csv: bool = False,
+    project_root: Path | None = None,
 ) -> pd.DataFrame:
-    """Run the full live price inference pipeline.
+    """Run the full price inference pipeline.
 
-    Fetches live data, runs ETL, loads the model, predicts, resamples to
+    Fetches data, runs ETL, loads the model, predicts, resamples to
     15-minute resolution, saves the result to CSV, and returns it.
+
+    In live mode (reference_time=None) data is fetched up to now and the
+    forecast window starts from the current hour.  In historical mode all
+    fetches and the forecast window are anchored to reference_time, allowing
+    replay of a past date for backtesting or evaluation.
 
     Args:
         model_path: Path to the pickled model file.
         horizon_hours: Number of hours ahead to predict.
         lag_steps: Lag offsets in hours — must match those used during training.
         output_path: Path to write the predictions CSV.
+        reference_time: UTC datetime to treat as "now".  If None, runs live.
+        use_csv: If True, build features from the training CSVs in Data/ instead
+            of calling live APIs.  Produces predictions identical to those from
+            model training for any timestamp covered by the training data.
+        project_root: Repo root used when use_csv=True.  Defaults to four
+            directories above this file.
 
     Returns:
         DataFrame with columns ``Timestamp`` and ``Price_pred``
         at 15-minute resolution (``horizon_hours * 4`` rows).
     """
-    # Step 1 — Build live merged dataset
-    print("\n-- Step 1: Building live merged dataset")
-    live_df = build_live_merged_dataset(
-        past_hours=PRICE_LOOKBACK_HOURS,
-        forecast_days=3,
-        lag_steps=lag_steps,
-    )
-    print(f"Live dataset shape: {live_df.shape}")
+    if use_csv:
+        root = project_root or Path(__file__).resolve().parents[4]
+        mode = f"CSV ({reference_time})" if reference_time is not None else "CSV (all)"
+        print(f"\n-- Step 1: Building {mode} merged dataset from training CSVs")
+        live_df = build_merged_dataset(root)
+    else:
+        mode = f"historical ({reference_time})" if reference_time is not None else "live"
+        print(f"\n-- Step 1: Building {mode} merged dataset")
+        live_df = build_live_merged_dataset(
+            past_hours=PRICE_LOOKBACK_HOURS,
+            forecast_days=3,
+            lag_steps=lag_steps,
+            reference_time=reference_time,
+        )
+    print(f"Dataset shape: {live_df.shape}")
 
     # Step 2 — Load model
     print("\n-- Step 2: Loading model")
@@ -199,7 +228,9 @@ def run_inference(
 
     # Step 3 — Select forecast rows
     print("\n-- Step 3: Selecting forecast rows")
-    forecast_df = select_forecast_rows(live_df, horizon_hours=horizon_hours)
+    forecast_df = select_forecast_rows(
+        live_df, horizon_hours=horizon_hours, reference_time=reference_time
+    )
     print(f"Forecast rows: {len(forecast_df)}  (horizon = {horizon_hours} h)")
 
     if forecast_df.empty:
@@ -249,15 +280,39 @@ def run_inference(
 
 def main() -> None:
     """CLI entry point — parses arguments and delegates to run_inference."""
-    parser = argparse.ArgumentParser(description="Run live price inference.")
+    parser = argparse.ArgumentParser(
+        description="Run price inference (live or historical).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  Live:        python -m ors.services.price_inference.live_inference\n"
+            "  Historical:  python -m ors.services.price_inference.live_inference"
+            " --date 2025-01-15T12:00\n"
+        ),
+    )
     parser.add_argument(
         "--model",
         type=Path,
         default=MODEL_PATH,
         help="Path to the .pkl model file (default: %(default)s)",
     )
+    parser.add_argument(
+        "--date",
+        type=lambda s: datetime.fromisoformat(s).replace(tzinfo=timezone.utc),
+        default=None,
+        metavar="YYYY-MM-DDTHH:MM",
+        help="Reference datetime in ISO format (e.g. 2025-01-15T12:00). "
+             "If omitted, runs live against the current time.",
+    )
+    parser.add_argument(
+        "--use-csv",
+        action="store_true",
+        default=False,
+        help="Build features from the training CSVs in Data/ instead of live APIs. "
+             "Produces predictions identical to those from model training.",
+    )
     args = parser.parse_args()
-    run_inference(model_path=args.model)
+    run_inference(model_path=args.model, reference_time=args.date, use_csv=args.use_csv)
 
 
 if __name__ == "__main__":

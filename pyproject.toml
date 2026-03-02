@@ -226,7 +226,6 @@ module = [
     "xgboost.*",
     "matplotlib.*",
     "openmeteo_requests.*",
-    "openmeteo_sdk.*",
     "requests.*",
     "requests_cache.*",
     "retry_requests.*",
@@ -235,10 +234,6 @@ module = [
     "dateutil.*",
 ]
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["openmeteo_sdk.*"]
-follow_imports = "skip"
 
 [tool.pyomo]
 # Pyomo configuration placeholder

@@ -53,12 +53,15 @@ PRICE_LOOKBACK_HOURS: int = 48
 def _fetch_live_weather(
     past_hours: int = PRICE_LOOKBACK_HOURS,
     forecast_days: int = 2,
+    reference_time: datetime | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Fetch forecast weather using the same DEFAULT_PARAMS as training.
 
     Args:
         past_hours: Hours of history to include (populates lag windows).
         forecast_days: Days ahead to forecast.
+        reference_time: Reserved for future historical-replay support in the
+            weather client.
 
     Returns:
         Tuple of (hourly_df, daily_df) with identical columns to training data.
@@ -84,21 +87,23 @@ def _fetch_live_price(
     data_providers: list[str] = DEFAULT_DATA_PROVIDERS,
     lookback_hours: int = PRICE_LOOKBACK_HOURS,
     timeout: int = 60,
+    reference_time: datetime | None = None,
 ) -> pd.DataFrame:
-    """Fetch recent price and demand data from BMRS.
+    """Fetch recent price and demand data from BMRS using the robust pipeline.
 
     Args:
         base_url: BMRS API base URL.
-        data_providers: Optional MID provider filter list.
+        data_providers: Optional MID provider filter list (empty = APXMIDP).
         lookback_hours: How far back to fetch (must cover the longest lag).
         timeout: HTTP request timeout in seconds.
+        reference_time: If provided, treat this as "now" for the time window.
 
     Returns:
         DataFrame with columns: timestamp, price, demand_itsdo, demand_indo,
         demand_inddem.
     """
     session = make_session()
-    now = datetime.now(timezone.utc)
+    now = reference_time if reference_time is not None else datetime.now(timezone.utc)
     start_utc = now - timedelta(hours=lookback_hours)
 
     mid = fetch_mid_price(session, base_url, start_utc, now, data_providers, timeout)
@@ -134,6 +139,7 @@ def build_live_merged_dataset(
     base_url: str = BMRS_BASE_URL,
     data_providers: list[str] = DEFAULT_DATA_PROVIDERS,
     timeout: int = 60,
+    reference_time: datetime | None = None,
 ) -> pd.DataFrame:
     """Return a fully ETL-processed DataFrame.
 
@@ -147,6 +153,7 @@ def build_live_merged_dataset(
         base_url: BMRS API base URL.
         data_providers: MID data-provider filter list (empty = no filter).
         timeout: HTTP timeout in seconds.
+        reference_time: UTC datetime to treat as "now". If None, runs live.
 
     Returns:
         Merged, transformed DataFrame sorted by Timestamp, ready for inference.
@@ -160,6 +167,7 @@ def build_live_merged_dataset(
     hourly_df, daily_df = _fetch_live_weather(
         past_hours=past_hours,
         forecast_days=forecast_days,
+        reference_time=reference_time,
     )
 
     print("Fetching live price/demand data ...")
@@ -168,6 +176,7 @@ def build_live_merged_dataset(
         data_providers=data_providers,
         lookback_hours=past_hours,
         timeout=timeout,
+        reference_time=reference_time,
     )
 
     # 2. Standardise timestamp columns

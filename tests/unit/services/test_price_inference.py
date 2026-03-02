@@ -3,11 +3,14 @@
 Covers:
 - live_inference.py: prepare_features_for_inference, load_model, select_forecast_rows
 - live_data_pipeline.py: build_live_merged_dataset (via mocked helpers)
+- reference_time: historical replay mode for both select_forecast_rows and
+  build_live_merged_dataset
 """
 
 from __future__ import annotations
 
 import pickle
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -140,7 +143,7 @@ def test_load_model_returns_object(tmp_path):
 
 
 def test_select_forecast_rows_returns_last_n():
-    now = pd.Timestamp.now().floor("h")
+    now = pd.Timestamp.utcnow().tz_convert(None).floor("h")  # tz-naive UTC, matches function internals
     timestamps = [now + pd.Timedelta(hours=i) for i in range(10)]
     df = pd.DataFrame({"Timestamp": timestamps, "val": range(10)})
 
@@ -150,7 +153,7 @@ def test_select_forecast_rows_returns_last_n():
 
 
 def test_select_forecast_rows_returns_copy():
-    now = pd.Timestamp.now().floor("h")
+    now = pd.Timestamp.utcnow().tz_convert(None).floor("h")  # tz-naive UTC, matches function internals
     timestamps = [now + pd.Timedelta(hours=i) for i in range(5)]
     df = pd.DataFrame({"Timestamp": timestamps, "val": range(5)})
     out = li.select_forecast_rows(df, horizon_hours=2)
@@ -167,13 +170,38 @@ def test_select_forecast_rows_empty_df_prints_warning(capsys):
 
 
 def test_select_forecast_rows_horizon_larger_than_df():
-    now = pd.Timestamp.now().floor("h")
+    now = pd.Timestamp.utcnow().tz_convert(None).floor("h")  # tz-naive UTC, matches function internals
     timestamps = [now + pd.Timedelta(hours=i) for i in range(3)]
     df = pd.DataFrame({"Timestamp": timestamps, "val": range(3)})
 
     out = li.select_forecast_rows(df, horizon_hours=10)
 
     assert len(out) == 3
+
+
+def test_select_forecast_rows_reference_time_used_as_anchor():
+    ref = datetime(2025, 6, 15, 12, 0, tzinfo=timezone.utc)
+    ref_ts = pd.Timestamp(ref).tz_convert(None).floor("h")  # tz-naive, matches production
+    timestamps = [ref_ts + pd.Timedelta(hours=i) for i in range(10)]
+    df = pd.DataFrame({"Timestamp": timestamps, "val": range(10)})
+
+    out = li.select_forecast_rows(df, horizon_hours=3, reference_time=ref)
+
+    assert list(out["val"]) == [0, 1, 2]
+    assert out["Timestamp"].iloc[0] == ref_ts
+
+
+def test_select_forecast_rows_reference_time_excludes_earlier_rows():
+    ref = datetime(2025, 6, 15, 12, 0, tzinfo=timezone.utc)
+    ref_ts = pd.Timestamp(ref).tz_convert(None).floor("h")  # tz-naive, matches production
+    # rows before and after reference_time
+    timestamps = [ref_ts - pd.Timedelta(hours=2), ref_ts, ref_ts + pd.Timedelta(hours=1)]
+    df = pd.DataFrame({"Timestamp": timestamps, "val": [10, 20, 30]})
+
+    out = li.select_forecast_rows(df, horizon_hours=5, reference_time=ref)
+
+    assert 10 not in list(out["val"])
+    assert list(out["val"]) == [20, 30]
 
 
 # ---------------------------------------------------------------------------
@@ -294,3 +322,24 @@ def test_build_live_merged_dataset_all_price_endpoints_unavailable(monkeypatch):
 
     assert isinstance(result, pd.DataFrame)
     assert "Timestamp" in result.columns
+
+
+def test_build_live_merged_dataset_passes_reference_time(monkeypatch):
+    ref = datetime(2025, 6, 15, 12, 0, tzinfo=timezone.utc)
+    captured: dict = {}
+
+    def fake_weather(**k):
+        captured["weather_ref"] = k.get("reference_time")
+        return _make_hourly_df(), _make_daily_df()
+
+    def fake_price(**k):
+        captured["price_ref"] = k.get("reference_time")
+        return _make_price_df()
+
+    monkeypatch.setattr(ldp, "_fetch_live_weather", fake_weather)
+    monkeypatch.setattr(ldp, "_fetch_live_price", fake_price)
+
+    ldp.build_live_merged_dataset(lag_steps=(1,), reference_time=ref)
+
+    assert captured["weather_ref"] == ref
+    assert captured["price_ref"] == ref
