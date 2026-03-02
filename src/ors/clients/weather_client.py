@@ -9,7 +9,7 @@ import openmeteo_requests
 import pandas as pd
 import requests_cache
 from openmeteo_requests import Client
-from openmeteo_sdk.WeatherApiResponse import WeatherApiResponse
+from openmeteo_sdk.WeatherApiResponse import WeatherApiResponse  # type: ignore[import-untyped]
 from retry_requests import retry
 
 from ors.config.api_endpoints import ARCHIVE_API_URL, FORECAST_API_URL

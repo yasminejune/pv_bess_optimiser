@@ -250,8 +250,15 @@ def run_inference(
         index=pd.DatetimeIndex(forecast_df["Timestamp"].values),
         name="Price_pred",
     )
+    # Start the 15-min window at the current 15-min slot, not the top of the hour.
+    # e.g. at 2:20 → start at 2:15 instead of 2:00.
+    if reference_time is not None:
+        _ts = pd.Timestamp(reference_time)
+        _start_15min = (_ts.tz_convert(None) if _ts.tzinfo is not None else _ts).floor("15min")
+    else:
+        _start_15min = pd.Timestamp.utcnow().tz_convert(None).floor("15min")
     idx_15min = pd.date_range(
-        start=hourly_series.index[0],
+        start=_start_15min,
         periods=horizon_hours * 4,
         freq="15min",
     )

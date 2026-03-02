@@ -341,6 +341,7 @@ def train_and_save_from_dataframe(
     with open(inference_pkl, "wb") as fh:
         pickle.dump(model, fh)
     print("Inference model saved to:", inference_pkl)
+
     save_metrics(metrics, metrics_path)
     save_predictions(df.loc[y_test.index, "Timestamp"], y_test, model.predict(x_test), preds_path)
     save_feature_importance(model, features, importance_path)
