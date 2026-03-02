@@ -12,7 +12,7 @@ Run from the repo root::
 from __future__ import annotations
 
 import argparse
-import pickle  #models will be saved in this format
+import pickle  # models will be saved in this format
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -168,6 +168,7 @@ def select_forecast_rows(
 
     return forecast_df
 
+
 # Full pipeline (importable entry point for next modules)
 
 
@@ -302,14 +303,14 @@ def main() -> None:
         default=None,
         metavar="YYYY-MM-DDTHH:MM",
         help="Reference datetime in ISO format (e.g. 2025-01-15T12:00). "
-             "If omitted, runs live against the current time.",
+        "If omitted, runs live against the current time.",
     )
     parser.add_argument(
         "--use-csv",
         action="store_true",
         default=False,
         help="Build features from the training CSVs in Data/ instead of live APIs. "
-             "Produces predictions identical to those from model training.",
+        "Produces predictions identical to those from model training.",
     )
     args = parser.parse_args()
     run_inference(model_path=args.model, reference_time=args.date, use_csv=args.use_csv)

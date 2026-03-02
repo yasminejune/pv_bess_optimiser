@@ -143,7 +143,9 @@ def test_load_model_returns_object(tmp_path):
 
 
 def test_select_forecast_rows_returns_last_n():
-    now = pd.Timestamp.utcnow().tz_convert(None).floor("h")  # tz-naive UTC, matches function internals
+    now = (
+        pd.Timestamp.utcnow().tz_convert(None).floor("h")
+    )  # tz-naive UTC, matches function internals
     timestamps = [now + pd.Timedelta(hours=i) for i in range(10)]
     df = pd.DataFrame({"Timestamp": timestamps, "val": range(10)})
 
@@ -153,7 +155,9 @@ def test_select_forecast_rows_returns_last_n():
 
 
 def test_select_forecast_rows_returns_copy():
-    now = pd.Timestamp.utcnow().tz_convert(None).floor("h")  # tz-naive UTC, matches function internals
+    now = (
+        pd.Timestamp.utcnow().tz_convert(None).floor("h")
+    )  # tz-naive UTC, matches function internals
     timestamps = [now + pd.Timedelta(hours=i) for i in range(5)]
     df = pd.DataFrame({"Timestamp": timestamps, "val": range(5)})
     out = li.select_forecast_rows(df, horizon_hours=2)
@@ -170,7 +174,9 @@ def test_select_forecast_rows_empty_df_prints_warning(capsys):
 
 
 def test_select_forecast_rows_horizon_larger_than_df():
-    now = pd.Timestamp.utcnow().tz_convert(None).floor("h")  # tz-naive UTC, matches function internals
+    now = (
+        pd.Timestamp.utcnow().tz_convert(None).floor("h")
+    )  # tz-naive UTC, matches function internals
     timestamps = [now + pd.Timedelta(hours=i) for i in range(3)]
     df = pd.DataFrame({"Timestamp": timestamps, "val": range(3)})
 

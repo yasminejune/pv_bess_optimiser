@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
 import pandas as pd
 from pyomo.environ import (
     Binary,
@@ -13,42 +18,84 @@ from pyomo.environ import (
     value,
 )
 
-# -----------------------------
-# CONFIG
-# -----------------------------
-INPUT_CSV = "../../../../tests/data/optimizer/bess_test_data_intraday_15min.csv"  # columns: timestamp, price_intraday, solar_MW
-OUTPUT_CSV = "../../../../tests/data/optimizer/bess_solution_v2_15min_1day.csv"
-HISTORIC_PRICE_CSV = "../../../../tests/data/prediction/price_data.csv"
+# Battery integration functions (must be a proper package import)
+from ors.services.battery_to_optimization.battery_inference import (
+    create_enhanced_optimizer_output,
+    load_optimizer_battery_config,  # imported in case you want direct use
+)
 
-DT = 0.25  # 15 minutes in hours
-N_D = 24 / DT  # 96 periods in a day
+# -----------------------------
+# PATHS / CONFIG
+# -----------------------------
+HERE = Path(__file__).resolve()
+# optimizer.py should be at: src/ors/services/optimizer/optimizer.py
+# parents:
+# 0=optimizer.py, 1=optimizer, 2=services, 3=ors, 4=src, 5=repo_root
+REPO_ROOT = HERE.parents[5]
+
+INPUT_CSV = (
+    REPO_ROOT / "tests/data/optimizer/bess_test_data_intraday_15min.csv"
+)  # columns: timestamp, price_intraday, solar_MW
+OUTPUT_CSV = REPO_ROOT / "tests/data/optimizer/bess_solution_v2_15min_1day.csv"
+HISTORIC_PRICE_CSV = REPO_ROOT / "tests/data/prediction/price_data.csv"
+BATTERY_STEP_CSV = REPO_ROOT / "src/ors/services/battery_to_optimization/battery_storage.csv"
+
+# Start optimization horizon reference (used for discharge-window average)
+START = "00:00"
+
+
+# -----------------------------
+# LOAD BATTERY CONFIG
+# -----------------------------
+print("Loading battery configuration...")
+try:
+    battery_params, sim_defaults = load_optimizer_battery_config()
+    print(f"✓ Loaded battery config: {battery_params.p_rated_mw}MW / {battery_params.e_cap_mwh}MWh")
+except Exception as e:
+    print(f"⚠ Could not load battery config: {e}")
+    print("Using default parameters...")
+
+    class MockBatteryParams:
+        p_rated_mw = 100.0
+        eta_ch = 0.97
+        eta_dis = 0.97
+        e_cap_mwh = 600.0
+        e_min_mwh = 60.0
+        e_max_mwh = 540.0
+        p_aux_mw = 0.5
+        r_sd_per_hour = 0.0005
+
+    battery_params = MockBatteryParams()
+    sim_defaults = {"dt_hours": 0.25, "enforce_bounds": True}
+
+# Extract parameters from battery config
+DT = float(sim_defaults["dt_hours"])  # 15 minutes = 0.25 hours
+N_D = int(round(24 / DT))  # 96 periods in a day
 
 # Power limits
-P_CH_MAX = 100.0  # MW
-P_DIS_MAX = 100.0  # MW
-P_RATED = 100.0  # MW
+P_CH_MAX = float(battery_params.p_rated_mw)  # MW
+P_DIS_MAX = float(battery_params.p_rated_mw)  # MW
+P_RATED = float(battery_params.p_rated_mw)  # MW
 
 # Efficiencies
-ETA_CH = 0.97
-ETA_DIS = 0.97
+ETA_CH = float(battery_params.eta_ch)
+ETA_DIS = float(battery_params.eta_dis)
 ETA_SOL_SELL = 0.97  # losses when selling solar directly
 
 # Losses
-A_AUX = 0.005  # 0.5% of rated power
-P_AUX = A_AUX * P_RATED  # MW
-R_SD = 0.0005  # per hour (0.05%/h)
+P_AUX = float(battery_params.p_aux_mw)  # MW
+R_SD = float(battery_params.r_sd_per_hour)  # per hour
 
-# 6h capacity
-E_CAP = P_RATED * 6.0  # 600 MWh
-E_MIN = 0.10 * E_CAP  # 60
-E_MAX = 0.90 * E_CAP  # 540
-E0 = 0.50 * E_CAP  # 300
-H_30 = (E_MAX - E_MIN) / P_DIS_MAX  # 5.4 hours
+# Energy capacity and bounds
+E_CAP = float(battery_params.e_cap_mwh)  # MWh
+E_MIN = float(battery_params.e_min_mwh)  # MWh
+E_MAX = float(battery_params.e_max_mwh)  # MWh
+E0 = 0.50 * E_CAP  # Start at 50% SOC
+
+# IMPORTANT: H_30 is used inside load_inputs() to compute the historic-price window
+H_30 = (E_MAX - E_MIN) / P_DIS_MAX  # hours
 
 MAX_CYCLES_PER_DAY = 3
-
-# Start optimization
-START = "00:00"
 
 
 # -----------------------------
@@ -59,34 +106,22 @@ def load_inputs(
     historic_csv: str,
     start: str = START,
 ) -> tuple[dict[int, float], dict[int, float], float]:
-    """Load intraday and historic price CSVs and return model inputs.
-
-    Args:
-        input_csv: Path to 96-row intraday CSV with columns timestamp,
-            price_intraday, solar_MW.
-        historic_csv: Path to historic price CSV with columns timestamp, price.
-            Must contain at least 30 days (2880 rows).
-        start: HH:MM string for the start of the discharge window used to
-            compute the 30-day average terminal price. Defaults to "00:00".
-
-    Returns:
-        A tuple of (price, solar, p_30) where price and solar are 1-indexed
-        dicts of length 96 and p_30 is the average historic price over the
-        discharge window.
-    """
+    """Load intraday and historic price CSVs and return model inputs."""
     df = pd.read_csv(input_csv)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     n_t = len(df)
-    assert n_t == 96, f"Expected 96 timesteps for 1 day at 15-min. Got {n_t}."
+    assert n_t == N_D, f"Expected {N_D} timesteps for 1 day at {DT}-hour steps. Got {n_t}."
 
     price = {i + 1: float(df.loc[i, "price_intraday"]) for i in range(n_t)}
     solar = {i + 1: float(df.loc[i, "solar_MW"]) for i in range(n_t)}
 
     df_hist_price = pd.read_csv(historic_csv)
     df_hist_price["timestamp"] = pd.to_datetime(df_hist_price["timestamp"], utc=True)
+
+    min_rows = 30 * N_D
     assert (
-        len(df_hist_price) >= 30 * 96
-    ), f"Expected at least 30 days of historic price data. Got {len(df_hist_price)} rows."
+        len(df_hist_price) >= min_rows
+    ), f"Expected at least 30 days of historic price data ({min_rows} rows). Got {len(df_hist_price)} rows."
 
     df_hist_price["date"] = df_hist_price["timestamp"].dt.date
     df_hist_price["time_h"] = (
@@ -118,41 +153,27 @@ def build_model(
     solar: dict[int, float],
     p_30: float,
 ) -> ConcreteModel:
-    """Build and return the Pyomo MILP model without solving.
-
-    Args:
-        price: 1-indexed dict of intraday prices (£/MWh) for each timestep.
-        solar: 1-indexed dict of solar generation forecasts (MW) for each
-            timestep.
-        p_30: 30-day average price over the discharge window, used to value
-            terminal energy remaining in the battery (£/MWh).
-
-    Returns:
-        A configured ConcreteModel ready to be passed to a solver.
-    """
+    """Build and return the Pyomo MILP model without solving."""
     n_t = len(price)
     m = ConcreteModel()
     m.T = RangeSet(1, n_t)
 
-    m.p = Param(m.T, initialize=price)
-    m.S = Param(m.T, initialize=solar)
+    m.p = Param(m.T, initialize=price)  # £/MWh
+    m.S = Param(m.T, initialize=solar)  # MW
 
     # -----------------------------
     # VARIABLES
     # -----------------------------
-    # Power decisions
     m.P_grid = Var(m.T, domain=NonNegativeReals)  # MW (grid -> battery)
     m.P_dis = Var(m.T, domain=NonNegativeReals)  # MW (battery -> grid)
 
     m.P_sol_bat = Var(m.T, domain=NonNegativeReals)  # MW (solar -> battery)
     m.P_sol_sell = Var(m.T, domain=NonNegativeReals)  # MW (solar -> grid direct)
 
-    # Battery mode binaries (mutually exclusive)
-    m.z_grid = Var(m.T, domain=Binary)  # battery charges from grid
-    m.z_solbat = Var(m.T, domain=Binary)  # battery charges from solar
-    m.z_dis = Var(m.T, domain=Binary)  # battery discharges
+    m.z_grid = Var(m.T, domain=Binary)
+    m.z_solbat = Var(m.T, domain=Binary)
+    m.z_dis = Var(m.T, domain=Binary)
 
-    # State of energy
     m.E = Var(m.T)  # MWh (bounded by constraints)
 
     # Cycle logic
@@ -163,20 +184,16 @@ def build_model(
     # -----------------------------
     # CONSTRAINTS
     # -----------------------------
-
-    # 1) Battery mode exclusivity: at most one of {grid charge, solar charge, discharge}
     def mode_excl_rule(m, t):
         return m.z_grid[t] + m.z_solbat[t] + m.z_dis[t] <= 1
 
     m.mode_excl = Constraint(m.T, rule=mode_excl_rule)
 
-    # 2) Solar balance (no curtailment): all solar must be used
     def solar_balance_rule(m, t):
         return m.P_sol_bat[t] + m.P_sol_sell[t] == m.S[t]
 
     m.solar_balance = Constraint(m.T, rule=solar_balance_rule)
 
-    # 3) Power activation + limits
     def grid_charge_limit(m, t):
         return m.P_grid[t] <= P_CH_MAX * m.z_grid[t]
 
@@ -192,20 +209,15 @@ def build_model(
 
     m.discharge_limit = Constraint(m.T, rule=discharge_limit)
 
-    # 4) Energy bounds
     def energy_bounds_rule(m, t):
         return (E_MIN, m.E[t], E_MAX)
 
     m.energy_bounds = Constraint(m.T, rule=energy_bounds_rule)
 
-    # 5) Energy balance for all t (t=1 uses E0 as the prior state)
-    # Previously E_init fixed E[1]=E0 and the balance skipped t=1, which let
-    # P_dis[1] earn revenue without reducing any stored energy.  Including t=1
-    # here (with E0 as the "previous" state) closes that loophole.
+    # Energy balance for all t (including t=1 using E0 as previous state)
     def energy_balance_rule(m, t):
         e_prev = E0 if t == 1 else m.E[t - 1]
         p_ch = m.P_grid[t] + m.P_sol_bat[t]
-
         return m.E[t] == (
             e_prev
             + ETA_CH * p_ch * DT
@@ -218,31 +230,23 @@ def build_model(
 
     # -----------------------------
     # CYCLE COUNTING (max 3 cycles/day)
-    # c_t = z_grid + z_solbat, d_t = z_dis
-    # q_t turns on with charging, stays on through idle, turns off when discharging
-    # A cycle is counted when a discharge segment starts AND q_{t-1}=1
     # -----------------------------
-
-    # Initialize flag & discharge-start & cycle vars at t=1
     m.q_init = Constraint(expr=m.q[1] == 0)
     m.s_dis_init = Constraint(expr=m.s_dis[1] == 0)
     m.cycle_init = Constraint(expr=m.cycle[1] == 0)
 
-    # q_t >= c_t (charging turns flag ON)
     def q_on_rule(m, t):
         c_t = m.z_grid[t] + m.z_solbat[t]
         return m.q[t] >= c_t
 
     m.q_on = Constraint(m.T, rule=q_on_rule)
 
-    # q_t <= 1 - d_t (discharging turns flag OFF)
     def q_off_rule(m, t):
         d_t = m.z_dis[t]
         return m.q[t] <= 1 - d_t
 
     m.q_off = Constraint(m.T, rule=q_off_rule)
 
-    # q_t >= q_{t-1} - d_t (idle does not reset)
     def q_hold_rule(m, t):
         if t == 1:
             return Constraint.Skip
@@ -251,7 +255,6 @@ def build_model(
 
     m.q_hold = Constraint(m.T, rule=q_hold_rule)
 
-    # q_t <= q_{t-1} + c_t (flag consistency)
     def q_limit_rule(m, t):
         if t == 1:
             return Constraint.Skip
@@ -260,7 +263,6 @@ def build_model(
 
     m.q_limit = Constraint(m.T, rule=q_limit_rule)
 
-    # Start of discharge: s_dis_t >= d_t - d_{t-1}
     def s_dis_rule(m, t):
         if t == 1:
             return Constraint.Skip
@@ -268,7 +270,6 @@ def build_model(
 
     m.s_dis_def = Constraint(m.T, rule=s_dis_rule)
 
-    # cycle_t = AND(s_dis_t, q_{t-1})
     def cycle_and1(m, t):
         if t == 1:
             return Constraint.Skip
@@ -288,17 +289,15 @@ def build_model(
     m.cycle_and2 = Constraint(m.T, rule=cycle_and2)
     m.cycle_and3 = Constraint(m.T, rule=cycle_and3)
 
-    # Daily cycle limit (single day horizon)
     def daily_cycles_rule(m, t):
-        window_start = max(1, t - (N_D - 1))  # 96 periods back (inclusive of t)
+        window_start = max(1, t - (N_D - 1))
         return sum(m.cycle[k] for k in range(window_start, t + 1)) <= MAX_CYCLES_PER_DAY
 
     m.daily_cycles = Constraint(m.T, rule=daily_cycles_rule)
 
     # -----------------------------
-    # OBJECTIVE
-    # max Σ p_t·Δt·(P_dis + η_sol_sell·P_sol_sell - P_grid) + (E_T - E_min)·p_30
-    # All terms in £ for consistent weighting of dispatch vs terminal value
+    # OBJECTIVE (Δt-scaled to convert MW to MWh over interval)
+    # max Σ p_t·Δt·(P_dis + η_sol_sell·P_sol_sell - P_grid) + terminal value
     # -----------------------------
     m.obj = Objective(
         expr=sum(
@@ -311,24 +310,40 @@ def build_model(
     return m
 
 
+# -----------------------------
+# MAIN
+# -----------------------------
 if __name__ == "__main__":
-    price, solar, p_30 = load_inputs(INPUT_CSV, HISTORIC_PRICE_CSV)
+    price, solar, p_30 = load_inputs(str(INPUT_CSV), str(HISTORIC_PRICE_CSV))
     m = build_model(price, solar, p_30)
 
-    # -----------------------------
-    # SOLVE
-    # -----------------------------
-    solver = SolverFactory("highs")
-    res = solver.solve(m, tee=True)  # tee=True shows progress
+    # Solve (try HiGHS first)
+    print("\n🔄 Solving optimization model...")
+    solvers_to_try = ["highs", "glpk", "cbc", "gurobi", "cplex"]
+    solver = None
+    for solver_name in solvers_to_try:
+        try:
+            test_solver = SolverFactory(solver_name)
+            if test_solver.available():
+                solver = test_solver
+                print(f"✓ Using solver: {solver_name}")
+                break
+        except Exception:
+            continue
 
+    if solver is None:
+        raise RuntimeError(
+            "No optimization solver available. Install one of: highs (highspy), glpk, cbc, gurobi, cplex."
+        )
+
+    res = solver.solve(m, tee=True)
+
+    # Load original input for timestamps
     df = pd.read_csv(INPUT_CSV)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
 
-    # -----------------------------
-    # EXPORT RESULTS
-    # -----------------------------
+    # Export results
     out = df.copy()
-
     out["P_grid_MW"] = [value(m.P_grid[t]) for t in m.T]
     out["P_dis_MW"] = [value(m.P_dis[t]) for t in m.T]
     out["P_sol_bat_MW"] = [value(m.P_sol_bat[t]) for t in m.T]
@@ -343,7 +358,6 @@ if __name__ == "__main__":
     out["s_dis"] = [int(round(value(m.s_dis[t]))) for t in m.T]
     out["cycle"] = [int(round(value(m.cycle[t]))) for t in m.T]
 
-    # Profit per step (with Δt scaling to reflect energy over interval)
     out["profit_step"] = (
         out["price_intraday"]
         * (out["P_dis_MW"] + ETA_SOL_SELL * out["P_sol_sell_MW"] - out["P_grid_MW"])
@@ -352,8 +366,36 @@ if __name__ == "__main__":
 
     out.to_csv(OUTPUT_CSV, index=False)
 
-    print(f"\nSaved: {OUTPUT_CSV}")
+    print(f"\n✓ Saved: {OUTPUT_CSV}")
     print(f"Total profit (Δt-scaled): {out['profit_step'].sum():.2f}")
     print(f"Total cycles counted: {int(out['cycle'].sum())}")
     print(f"Terminal energy E_T: {out['E_MWh'].iloc[-1]:.2f} MWh")
     print(f"Terminal value (p_30={p_30:.2f}): {(out['E_MWh'].iloc[-1] - E_MIN) * p_30:.2f}")
+
+    # Optional enhanced battery module output
+    print("\n🔋 Creating enhanced battery module output...")
+    try:
+        start_datetime: datetime = out["timestamp"].iloc[0].to_pydatetime()
+
+        export_results = create_enhanced_optimizer_output(
+            df_results=out,
+            csv_path=str(BATTERY_STEP_CSV),
+            params=battery_params,
+            dt_hours=DT,
+            start_datetime=start_datetime,
+            validate=True,
+        )
+
+        print(f"✓ Battery logs saved: {BATTERY_STEP_CSV}")
+        if isinstance(export_results, dict) and "validation" in export_results:
+            validation = export_results["validation"]
+            if validation.get("is_valid"):
+                print("✓ Energy balance validation: PASSED")
+                print(f"  Max error: {validation.get('max_error', 0.0):.6f} MWh")
+            else:
+                print("⚠ Energy balance validation: FAILED")
+                print(f"  Max error: {validation.get('max_error', 0.0):.6f} MWh")
+
+    except Exception as e:
+        print(f"⚠ Enhanced output failed: {e}")
+        print("Original CSV output is still available.")
