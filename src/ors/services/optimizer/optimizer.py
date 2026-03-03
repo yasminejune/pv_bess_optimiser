@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -42,7 +42,6 @@ BATTERY_STEP_CSV = REPO_ROOT / "src/ors/services/battery_to_optimization/battery
 
 # Start optimization horizon reference (used for discharge-window average)
 START = "00:00"
-
 
 # -----------------------------
 # LOAD BATTERY CONFIG
@@ -104,8 +103,10 @@ MAX_CYCLES_PER_DAY = 3
 def load_inputs(
     input_csv: str,
     historic_csv: str,
+    output_csv: str | None = None,
     start: str = START,
-) -> tuple[dict[int, float], dict[int, float], float]:
+    now_dt: datetime | None = None,
+) -> tuple[dict[int, float], dict[int, float], float, int, int]:
     """Load intraday and historic price CSVs and return model inputs."""
     df = pd.read_csv(input_csv)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
@@ -142,7 +143,26 @@ def load_inputs(
     )
     p_30 = float(df_hist_price.loc[mask, "price"].mean())
 
-    return price, solar, p_30
+    # Count cycles already used in the current 23:00-23:00 day
+    now = now_dt or datetime.now()
+    if now.hour >= 23:
+        day_start = now.replace(hour=23, minute=0, second=0, microsecond=0)
+    else:
+        day_start = (now - timedelta(days=1)).replace(hour=23, minute=0, second=0, microsecond=0)
+
+    if output_csv is not None:
+        df_output = pd.read_csv(output_csv)
+        df_output["timestamp"] = pd.to_datetime(df_output["timestamp"])
+        cycles_used_today = int(df_output[df_output["timestamp"] >= day_start]["cycle"].sum())
+    else:
+        cycles_used_today = 0
+
+    # Period index (1-based) of the next 23:00 within the horizon; clamped to n_t
+    next_23 = day_start + timedelta(days=1)
+    hours_until_23 = (next_23 - now).total_seconds() / 3600
+    t_boundary = min(n_t, int(round(hours_until_23 / DT)))
+
+    return price, solar, p_30, cycles_used_today, t_boundary
 
 
 # -----------------------------
@@ -152,6 +172,8 @@ def build_model(
     price: dict[int, float],
     solar: dict[int, float],
     p_30: float,
+    cycles_used_today: int,
+    t_boundary: int,
 ) -> ConcreteModel:
     """Build and return the Pyomo MILP model without solving."""
     n_t = len(price)
@@ -289,11 +311,19 @@ def build_model(
     m.cycle_and2 = Constraint(m.T, rule=cycle_and2)
     m.cycle_and3 = Constraint(m.T, rule=cycle_and3)
 
-    def daily_cycles_rule(m, t):
-        window_start = max(1, t - (N_D - 1))
-        return sum(m.cycle[k] for k in range(window_start, t + 1)) <= MAX_CYCLES_PER_DAY
+    # Constraint 1 — 23:00-to-23:00 calendar-day cap.
+    # Sum of cycles in the current-day portion of the horizon (periods 1..t_boundary), plus
+    # cycles already executed since the last 23:00, must not exceed the daily limit.
+    m.cycles_cur_day = Constraint(
+        expr=sum(m.cycle[k] for k in range(1, t_boundary + 1))
+        <= MAX_CYCLES_PER_DAY - cycles_used_today
+    )
 
-    m.daily_cycles = Constraint(m.T, rule=daily_cycles_rule)
+    # Constraint 2 — rolling 24h forward cap.
+    # Total cycles planned across the full 96-period horizon must not exceed the daily limit.
+    # Together with cycles_cur_day this ensures no consecutive 24h window ever exceeds the cap:
+    # any cycles used before 23:00 reduce the budget available after 23:00 in the same horizon.
+    m.daily_cycles = Constraint(expr=sum(m.cycle[k] for k in m.T) <= MAX_CYCLES_PER_DAY)
 
     # -----------------------------
     # OBJECTIVE (Δt-scaled to convert MW to MWh over interval)
@@ -314,8 +344,10 @@ def build_model(
 # MAIN
 # -----------------------------
 if __name__ == "__main__":
-    price, solar, p_30 = load_inputs(str(INPUT_CSV), str(HISTORIC_PRICE_CSV))
-    m = build_model(price, solar, p_30)
+    price, solar, p_30, cycles_used_today, t_boundary = load_inputs(
+        str(INPUT_CSV), str(HISTORIC_PRICE_CSV), str(OUTPUT_CSV)
+    )
+    m = build_model(price, solar, p_30, cycles_used_today, t_boundary)
 
     # Solve (try HiGHS first)
     print("\n🔄 Solving optimization model...")

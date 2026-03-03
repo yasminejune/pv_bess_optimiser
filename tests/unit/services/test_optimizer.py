@@ -60,7 +60,7 @@ def arbitrage_price() -> dict[int, float]:
 @pytest.fixture()
 def built_model(flat_price, zero_solar) -> ConcreteModel:
     """Pre-built model with flat prices and no solar — used in structure/rule tests."""
-    return build_model(flat_price, zero_solar, p_30=50.0)
+    return build_model(flat_price, zero_solar, p_30=50.0, cycles_used_today=0, t_boundary=96)
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ class TestModelStructure:
     def test_timestep_count_matches_price_length(self, flat_price, zero_solar):
         price_4 = dict.fromkeys(range(1, 5), 50.0)
         solar_4 = dict.fromkeys(range(1, 5), 0.0)
-        m = build_model(price_4, solar_4, p_30=50.0)
+        m = build_model(price_4, solar_4, p_30=50.0, cycles_used_today=0, t_boundary=4)
         assert list(m.T) == [1, 2, 3, 4]
 
     def test_model_has_96_timesteps_for_full_day(self, built_model):
@@ -143,6 +143,7 @@ class TestModelStructure:
             "cycle_and1",
             "cycle_and2",
             "cycle_and3",
+            "cycles_cur_day",
             "daily_cycles",
         ]
         for name in expected:
@@ -205,7 +206,7 @@ class TestConstraintRules:
 
     def test_solar_balance_rhs_matches_solar_param(self, flat_price, uniform_solar):
         """With 10 MW solar, the solar balance RHS equals 10 at every timestep."""
-        m = build_model(flat_price, uniform_solar, p_30=50.0)
+        m = build_model(flat_price, uniform_solar, p_30=50.0, cycles_used_today=0, t_boundary=96)
         for t in m.T:
             # solar_balance: P_sol_bat + P_sol_sell == S[t] = 10
             assert value(m.S[t]) == pytest.approx(10.0)
@@ -253,7 +254,7 @@ class TestLoadInputs:
         _write_intraday_csv(intraday_csv)
         hist_csv = tmp_path / "hist.csv"
         _write_historic_csv(hist_csv)
-        price, _, _ = load_inputs(str(intraday_csv), str(hist_csv))
+        price, *_ = load_inputs(str(intraday_csv), str(hist_csv))
         assert sorted(price.keys()) == list(range(1, 97))
 
     def test_solar_dict_is_1_indexed_with_96_keys(self, tmp_path):
@@ -261,7 +262,7 @@ class TestLoadInputs:
         _write_intraday_csv(intraday_csv, solar=5.0)
         hist_csv = tmp_path / "hist.csv"
         _write_historic_csv(hist_csv)
-        _, solar, _ = load_inputs(str(intraday_csv), str(hist_csv))
+        _, solar, *_ = load_inputs(str(intraday_csv), str(hist_csv))
         assert sorted(solar.keys()) == list(range(1, 97))
         assert all(v == pytest.approx(5.0) for v in solar.values())
 
@@ -270,7 +271,7 @@ class TestLoadInputs:
         _write_intraday_csv(intraday_csv, price=123.45)
         hist_csv = tmp_path / "hist.csv"
         _write_historic_csv(hist_csv)
-        price, _, _ = load_inputs(str(intraday_csv), str(hist_csv))
+        price, *_ = load_inputs(str(intraday_csv), str(hist_csv))
         assert all(v == pytest.approx(123.45) for v in price.values())
 
     def test_p_30_is_finite_float(self, tmp_path):
@@ -278,7 +279,7 @@ class TestLoadInputs:
         _write_intraday_csv(intraday_csv)
         hist_csv = tmp_path / "hist.csv"
         _write_historic_csv(hist_csv)
-        _, _, p_30 = load_inputs(str(intraday_csv), str(hist_csv))
+        _, _, p_30, *_ = load_inputs(str(intraday_csv), str(hist_csv))
         assert isinstance(p_30, float)
         assert math.isfinite(p_30)
 
@@ -288,12 +289,12 @@ class TestLoadInputs:
         _write_intraday_csv(intraday_csv)
         hist_csv = tmp_path / "hist.csv"
         _write_historic_csv(hist_csv, price=77.0)
-        _, _, p_30 = load_inputs(str(intraday_csv), str(hist_csv))
+        _, _, p_30, *_ = load_inputs(str(intraday_csv), str(hist_csv))
         assert p_30 == pytest.approx(77.0)
 
     def test_load_inputs_with_real_test_data(self):
         """Smoke test: the committed test data loads without error."""
-        price, solar, p_30 = load_inputs(str(_INTRADAY_CSV), str(_HISTORIC_CSV))
+        price, solar, p_30, *_ = load_inputs(str(_INTRADAY_CSV), str(_HISTORIC_CSV))
         assert len(price) == 96
         assert len(solar) == 96
         assert math.isfinite(p_30)
@@ -322,38 +323,66 @@ class TestSolverBehaviour:
 
     def test_flat_price_no_grid_charging(self, flat_price, zero_solar, solver):
         """With flat prices, grid charging then discharging is never profitable."""
-        m = self._solve(build_model(flat_price, zero_solar, p_30=50.0), solver)
+        m = self._solve(
+            build_model(flat_price, zero_solar, p_30=50.0, cycles_used_today=0, t_boundary=96),
+            solver,
+        )
         total_grid = sum(value(m.P_grid[t]) for t in m.T)
         assert total_grid == pytest.approx(0.0, abs=1e-3)
 
     def test_arbitrage_charges_in_cheap_period(self, arbitrage_price, zero_solar, solver):
         """With a clear low/high price split, expect grid charging in the cheap half."""
-        m = self._solve(build_model(arbitrage_price, zero_solar, p_30=100.0), solver)
+        m = self._solve(
+            build_model(
+                arbitrage_price, zero_solar, p_30=100.0, cycles_used_today=0, t_boundary=96
+            ),
+            solver,
+        )
         charge_cheap = sum(value(m.P_grid[t]) for t in range(1, 49))
         assert charge_cheap > 0.0
 
     def test_arbitrage_discharges_in_expensive_period(self, arbitrage_price, zero_solar, solver):
         """With a clear low/high price split, expect discharge in the expensive half."""
-        m = self._solve(build_model(arbitrage_price, zero_solar, p_30=100.0), solver)
+        m = self._solve(
+            build_model(
+                arbitrage_price, zero_solar, p_30=100.0, cycles_used_today=0, t_boundary=96
+            ),
+            solver,
+        )
         dis_expensive = sum(value(m.P_dis[t]) for t in range(49, 97))
         assert dis_expensive > 0.0
 
     def test_cycle_limit_not_exceeded(self, arbitrage_price, zero_solar, solver):
         """Total daily cycles must not exceed MAX_CYCLES_PER_DAY."""
-        m = self._solve(build_model(arbitrage_price, zero_solar, p_30=100.0), solver)
+        m = self._solve(
+            build_model(
+                arbitrage_price, zero_solar, p_30=100.0, cycles_used_today=0, t_boundary=96
+            ),
+            solver,
+        )
         total_cycles = sum(int(round(value(m.cycle[t]))) for t in m.T)
         assert total_cycles <= MAX_CYCLES_PER_DAY
 
     def test_energy_stays_within_bounds(self, arbitrage_price, zero_solar, solver):
         """E[t] must remain in [E_MIN, E_MAX] at every timestep."""
-        m = self._solve(build_model(arbitrage_price, zero_solar, p_30=100.0), solver)
+        m = self._solve(
+            build_model(
+                arbitrage_price, zero_solar, p_30=100.0, cycles_used_today=0, t_boundary=96
+            ),
+            solver,
+        )
         for t in m.T:
             e = value(m.E[t])
             assert E_MIN - 1e-3 <= e <= E_MAX + 1e-3, f"Energy out of bounds at t={t}: {e:.2f}"
 
     def test_mode_exclusivity_holds_in_solution(self, arbitrage_price, zero_solar, solver):
         """At most one of {z_grid, z_solbat, z_dis} may be active at any timestep."""
-        m = self._solve(build_model(arbitrage_price, zero_solar, p_30=100.0), solver)
+        m = self._solve(
+            build_model(
+                arbitrage_price, zero_solar, p_30=100.0, cycles_used_today=0, t_boundary=96
+            ),
+            solver,
+        )
         for t in m.T:
             mode_sum = (
                 round(value(m.z_grid[t])) + round(value(m.z_solbat[t])) + round(value(m.z_dis[t]))
@@ -362,7 +391,10 @@ class TestSolverBehaviour:
 
     def test_solar_balance_holds_in_solution(self, flat_price, uniform_solar, solver):
         """P_sol_bat[t] + P_sol_sell[t] must equal solar[t] at every timestep."""
-        m = self._solve(build_model(flat_price, uniform_solar, p_30=50.0), solver)
+        m = self._solve(
+            build_model(flat_price, uniform_solar, p_30=50.0, cycles_used_today=0, t_boundary=96),
+            solver,
+        )
         for t in m.T:
             solar_used = value(m.P_sol_bat[t]) + value(m.P_sol_sell[t])
             assert solar_used == pytest.approx(
@@ -377,14 +409,17 @@ class TestSolverBehaviour:
         grid-side is worth only 50 × ETA_DIS = 48.5 £/MWh battery-side,
         well below the 500 £/MWh terminal value, so P_dis must stay at zero.
         """
-        m = self._solve(build_model(flat_price, zero_solar, p_30=500.0), solver)
+        m = self._solve(
+            build_model(flat_price, zero_solar, p_30=500.0, cycles_used_today=0, t_boundary=96),
+            solver,
+        )
         total_dis = sum(value(m.P_dis[t]) for t in m.T)
         assert total_dis == pytest.approx(0.0, abs=1e-3)
 
     def test_solution_with_real_test_data(self, solver):
         """Smoke test: the model solves feasibly on committed test data."""
-        price, solar, p_30 = load_inputs(str(_INTRADAY_CSV), str(_HISTORIC_CSV))
-        m = self._solve(build_model(price, solar, p_30), solver)
+        price, solar, p_30, *_ = load_inputs(str(_INTRADAY_CSV), str(_HISTORIC_CSV))
+        m = self._solve(build_model(price, solar, p_30, cycles_used_today=0, t_boundary=96), solver)
         # Basic sanity: all power values are non-negative
         for t in m.T:
             assert value(m.P_grid[t]) >= -1e-4
