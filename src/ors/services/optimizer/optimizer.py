@@ -23,6 +23,7 @@ from ors.services.battery_to_optimization.battery_inference import (
     create_enhanced_optimizer_output,
     load_optimizer_battery_config,  # imported in case you want direct use
 )
+from ors.services.optimizer.integration import create_input_df
 
 # -----------------------------
 # PATHS / CONFIG
@@ -31,7 +32,7 @@ HERE = Path(__file__).resolve()
 # optimizer.py should be at: src/ors/services/optimizer/optimizer.py
 # parents:
 # 0=optimizer.py, 1=optimizer, 2=services, 3=ors, 4=src, 5=repo_root
-REPO_ROOT = HERE.parents[5]
+REPO_ROOT = HERE.parents[4]
 
 INPUT_CSV = (
     REPO_ROOT / "tests/data/optimizer/bess_test_data_intraday_15min.csv"
@@ -106,15 +107,16 @@ def load_inputs(
     output_csv: str | None = None,
     start: str = START,
     now_dt: datetime | None = None,
+    **kwargs,  # Kwargs for the create_input_df function
 ) -> tuple[dict[int, float], dict[int, float], float, int, int]:
     """Load intraday and historic price CSVs and return model inputs."""
-    df = pd.read_csv(input_csv)
+    df = create_input_df(**kwargs)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     n_t = len(df)
     assert n_t == N_D, f"Expected {N_D} timesteps for 1 day at {DT}-hour steps. Got {n_t}."
 
     price = {i + 1: float(df.loc[i, "price_intraday"]) for i in range(n_t)}
-    solar = {i + 1: float(df.loc[i, "solar_MW"]) for i in range(n_t)}
+    solar = {i + 1: float(df.loc[i, "generation_kw"]) for i in range(n_t)}
 
     df_hist_price = pd.read_csv(historic_csv)
     df_hist_price["timestamp"] = pd.to_datetime(df_hist_price["timestamp"], utc=True)
@@ -371,7 +373,7 @@ if __name__ == "__main__":
     res = solver.solve(m, tee=True)
 
     # Load original input for timestamps
-    df = pd.read_csv(INPUT_CSV)
+    df = create_input_df()
     df["timestamp"] = pd.to_datetime(df["timestamp"])
 
     # Export results
