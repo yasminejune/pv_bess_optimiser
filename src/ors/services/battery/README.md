@@ -48,6 +48,15 @@ new_energy = step_energy(
 #### `BatteryParams`
 Battery parameter container with physical and operational constraints.
 
+**Components:**
+- `battery_management.py`: Core battery physics and simulation
+- `battery_status.py`: Battery telemetry processing and state validation  
+- `demo.py`: Example usage and simulation patterns
+- `test.py`: Comprehensive unit tests
+
+#### `BatteryParams`
+Battery parameter container with physical and operational constraints.
+
 **Properties:**
 - `p_rated_mw` (float): Rated power in MW
 - `eta_ch` (float): Charging efficiency (0-1)
@@ -467,6 +476,105 @@ See `demo.py` for a complete example of building battery simulations using this 
 ```bash
 python demo.py
 ```
+
+---
+
+## Module: `battery_status.py` — Battery State Processing
+
+Processes raw battery telemetry into validated state objects with comprehensive quality tracking and error handling.
+
+### Purpose
+
+The `battery_status` module transforms real-time battery sensor data into reliable state information suitable for optimization and control decisions. It handles missing data, validates consistency between different measurements, and enforces physical constraints.
+
+### Key Functions
+
+#### `update_battery_state(spec, telemetry, *, prev_state=None, power_threshold_mw=0.1)`
+Main function for processing battery telemetry into validated state.
+
+**Parameters:**
+- `spec`: BatterySpec defining system constraints and capabilities
+- `telemetry`: BatteryTelemetry with raw sensor measurements
+- `prev_state`: Optional previous state for consistency validation
+- `power_threshold_mw`: Power threshold for determining idle mode (default: 0.1 MW)
+
+**Processing Logic:**
+1. **Energy/SOC Resolution**: Prioritizes energy over SOC, estimates missing values
+2. **Cross-Validation**: Checks consistency between energy and SOC measurements
+3. **Constraint Enforcement**: Clamps energy and power within specification limits
+4. **Operating Mode Determination**: Derives mode from power measurements and telemetry
+5. **Quality Assessment**: Tracks missing data, estimates, and validation issues
+
+**Quality Flags Generated:**
+- `missing_energy_and_soc`: Both primary measurements unavailable
+- `energy_estimated_from_soc`: Energy calculated from SOC percentage  
+- `energy_soc_mismatch`: Energy and SOC measurements inconsistent (>1% difference)
+- `using_previous_state`: Fallback to previous state for missing data
+- `defaulted_to_50_percent_soc`: Safe default when no state information available
+- `energy_clamped_to_minimum/maximum`: Energy constrained to operational bounds
+- `missing_power_data`: Power measurement unavailable
+- `power_clamped_to_rated`: Power exceeded rated limits
+- `mode_power_mismatch`: Operating mode inconsistent with power measurement
+- `mode_estimated_from_power`: Operating mode derived from power flow
+- `unrealistic_energy_change`: Energy change exceeds physical limits
+- `invalid_mode_defaulted_to_idle`: Invalid mode corrected to safe default
+
+#### `estimate_energy_from_soc(soc_percent, energy_capacity_mwh)`
+Converts state of charge percentage to energy using battery capacity.
+
+#### `estimate_soc_from_energy(energy_mwh, energy_capacity_mwh)` 
+Converts stored energy to state of charge percentage.
+
+#### `determine_operating_mode(power_mw, power_threshold_mw=0.1)`
+Determines battery operating mode from power flow measurement.
+
+**Returns:** `"charging"`, `"discharging"`, or `"idle"` based on power direction and threshold
+
+### Integration with Battery Management
+
+The `battery_status` module works alongside `battery_management` to provide complete battery system modeling:
+
+- **battery_management.py**: Physics-based simulation and energy calculations
+- **battery_status.py**: Real-time data processing and state validation
+
+Together, they enable both forward simulation (physics) and state estimation (telemetry processing) capabilities.
+
+### Example Usage
+
+```python
+from ors.domain.models.battery import BatterySpec, BatteryTelemetry
+from ors.services.battery.battery_status import update_battery_state
+from datetime import datetime
+
+# Define battery system
+spec = BatterySpec(
+    rated_power_mw=100.0,
+    energy_capacity_mwh=400.0,
+    min_soc_percent=10.0,
+    max_soc_percent=90.0
+)
+
+# Process telemetry with missing data
+telemetry = BatteryTelemetry(
+    timestamp=datetime(2026, 3, 11, 14, 30, 0),
+    current_energy_mwh=None,     # Missing
+    current_soc_percent=65.0,    # Available
+    current_power_mw=50.0,       # Charging
+    operating_mode=None,         # Missing
+    is_available=True
+)
+
+# Generate validated state
+state = update_battery_state(spec, telemetry)
+
+# Results with quality tracking
+print(f"Energy: {state.energy_mwh} MWh")  # Estimated from SOC
+print(f"Mode: {state.operating_mode}")    # Estimated from power
+print(f"Quality flags: {state.quality_flags}")
+# {'energy_estimated_from_soc', 'mode_estimated_from_power'}
+```
+
+---
 
 ## Dependencies
 

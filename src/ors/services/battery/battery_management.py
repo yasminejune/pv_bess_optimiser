@@ -221,7 +221,16 @@ class LossBreakdown:
 
 
 def clamp(value: float, lo: float, hi: float) -> float:
-    """Clamp a scalar to [lo, hi]."""
+    """Clamp a scalar to [lo, hi].
+
+    Args:
+        value (float): Value to clamp
+        lo (float): Lower bound
+        hi (float): Upper bound
+
+    Returns:
+        float: Clamped value within bounds
+    """
     return max(lo, min(hi, value))
 
 
@@ -240,8 +249,19 @@ def compute_losses(
         These losses are derived from the same update equation used in
         `step_energy`.
 
+    Args:
+        e_prev_mwh (float): Previous state-of-energy (MWh)
+        p_grid_mw (float): Grid charging power (MW)
+        p_sol_mw (float): Solar charging power (MW)
+        p_dis_mw (float): Discharging power (MW)
+        params (BatteryParams): Battery parameters
+        dt_hours (float): Step duration in hours
+
     Returns:
-        LossBreakdown with components in MWh.
+        LossBreakdown: Loss components in MWh
+
+    Raises:
+        ValueError: If dt_hours <= 0
     """
     if dt_hours <= 0:
         raise ValueError("dt_hours must be > 0")
@@ -280,16 +300,19 @@ def step_energy(
     """Update battery energy by one time step.
 
     Args:
-        e_prev_mwh: previous state-of-energy (MWh)
-        p_grid_mw: grid charging power (MW)
-        p_sol_mw: solar charging power (MW)
-        p_dis_mw: discharging power (MW)
-        params: BatteryParams
-        dt_hours: step duration in hours
-        enforce_bounds: if True, clamp E to [E_min, E_max]
+        e_prev_mwh (float): Previous state-of-energy (MWh)
+        p_grid_mw (float): Grid charging power (MW)
+        p_sol_mw (float): Solar charging power (MW)
+        p_dis_mw (float): Discharging power (MW)
+        params (BatteryParams): Battery parameters
+        dt_hours (float): Step duration in hours
+        enforce_bounds (bool): If True, clamp E to [E_min, E_max]
 
     Returns:
-        New energy state E_t in MWh.
+        float: New energy state E_t in MWh
+
+    Raises:
+        ValueError: If dt_hours <= 0
     """
     if dt_hours <= 0:
         raise ValueError("dt_hours must be > 0")
@@ -321,10 +344,10 @@ def load_config(config_path: str | Path) -> dict[str, Any]:
     """Load configuration from JSON file.
 
     Args:
-        config_path: Path to JSON configuration file
+        config_path (str | Path): Path to JSON configuration file
 
     Returns:
-        Dictionary containing configuration data
+        dict[str, Any]: Dictionary containing configuration data
 
     Raises:
         FileNotFoundError: If config file doesn't exist
@@ -351,10 +374,10 @@ def load_battery_params(config_path: str | Path) -> BatteryParams:
     """Load BatteryParams from JSON config file.
 
     Args:
-        config_path: Path to JSON configuration file
+        config_path (str | Path): Path to JSON configuration file
 
     Returns:
-        BatteryParams object with loaded parameters
+        BatteryParams: BatteryParams object with loaded parameters
 
     Raises:
         FileNotFoundError: If config file doesn't exist
@@ -385,10 +408,10 @@ def load_simulation_defaults(config_path: str | Path) -> dict[str, Any]:
     """Load simulation defaults from JSON config file.
 
     Args:
-        config_path: Path to JSON configuration file
+        config_path (str | Path): Path to JSON configuration file
 
     Returns:
-        Dictionary containing simulation default values
+        dict[str, Any]: Dictionary containing simulation default values
 
     Raises:
         FileNotFoundError: If config file doesn't exist
@@ -412,10 +435,10 @@ def load_battery_params_and_defaults(
     """Load both battery parameters and simulation defaults from config file.
 
     Args:
-        config_path: Path to JSON configuration file
+        config_path (str | Path): Path to JSON configuration file
 
     Returns:
-        Tuple of (BatteryParams, simulation_defaults)
+        tuple[BatteryParams, dict[str, Any]]: Tuple of (BatteryParams, simulation_defaults)
     """
     params = load_battery_params(config_path)
     defaults = load_simulation_defaults(config_path)
@@ -433,8 +456,8 @@ def write_simulation_csv(
     """Write simulation logs to CSV file.
 
     Args:
-        logs: List of log dictionaries containing simulation data
-        csv_path: Path where CSV file should be written
+        logs (list[dict[str, Any]]): List of log dictionaries containing simulation data
+        csv_path (str | Path): Path where CSV file should be written
 
     Expected log entry format:
         {
@@ -516,20 +539,20 @@ def create_log_entry(
     """Create a standardized log entry dictionary for CSV export.
 
     Args:
-        step: Step number (starting from 0)
-        t_hours: Elapsed time in hours
-        dt_hours: Time step duration in hours
-        p_grid_mw: Grid power in MW
-        p_sol_mw: Solar power in MW
-        p_dis_mw: Discharge power in MW
-        e_prev_mwh: Energy before step in MWh
-        e_next_mwh: Energy after step in MWh
-        losses: LossBreakdown object from compute_losses
-        eta_ch: Charging efficiency (for calculating energy in)
-        timestamp_iso: Optional ISO timestamp string
+        step (int): Step number (starting from 0)
+        t_hours (float): Elapsed time in hours
+        dt_hours (float): Time step duration in hours
+        p_grid_mw (float): Grid power in MW
+        p_sol_mw (float): Solar power in MW
+        p_dis_mw (float): Discharge power in MW
+        e_prev_mwh (float): Energy before step in MWh
+        e_next_mwh (float): Energy after step in MWh
+        losses (LossBreakdown): LossBreakdown object from compute_losses
+        eta_ch (float): Charging efficiency (for calculating energy in)
+        timestamp_iso (str | None): Optional ISO timestamp string
 
     Returns:
-        Dictionary ready for CSV export via write_simulation_csv
+        dict[str, Any]: Dictionary ready for CSV export via write_simulation_csv
     """
     # Calculate energy flows
     e_in_grid_mwh = max(0.0, p_grid_mw) * eta_ch * dt_hours

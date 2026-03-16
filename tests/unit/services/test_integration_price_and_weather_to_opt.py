@@ -167,7 +167,7 @@ def test_raises_if_pv_missing_timestamp_utc_column(monkeypatch, config_stub):
         _ = m.create_input_df(config=config_stub)
 
 
-def test_raises_if_price_missing_Timestamp_column(monkeypatch, config_stub):
+def test_raises_if_price_missing_timestamp_column(monkeypatch, config_stub):
     start = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
 
     def fake_generate_pv_power_for_date_range(*, config, start_datetime, end_datetime, **kwargs):
@@ -185,3 +185,64 @@ def test_raises_if_price_missing_Timestamp_column(monkeypatch, config_stub):
 
     with pytest.raises(KeyError, match="Timestamp"):
         _ = m.create_input_df(config=config_stub)
+
+
+def test_create_input_df_uses_lgbm_model_dir_by_default(monkeypatch, config_stub):
+    """Verifies run_inference receives model_path=LGBM_MODEL_DIR when none is passed."""
+    from src.ors.services.price_inference.live_inference import LGBM_MODEL_DIR
+
+    start = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
+    end = start + timedelta(hours=24)
+    captured: dict = {}
+
+    def fake_generate_pv_power_for_date_range(*, config, start_datetime, end_datetime, **kwargs):
+        return pd.DataFrame(
+            {"timestamp_utc": _dt_range_15m(start, periods=1), "generation_kw": [0]}
+        )
+
+    def fake_run_inference(**kwargs):
+        captured.update(kwargs)
+        return pd.DataFrame({"Timestamp": _dt_range_15m(start, periods=1), "Price_pred": [1.0]})
+
+    monkeypatch.setattr(
+        m, "generate_pv_power_for_date_range", fake_generate_pv_power_for_date_range
+    )
+    monkeypatch.setattr(m, "run_inference", fake_run_inference)
+
+    _ = m.create_input_df(config=config_stub, start_datetime=start, end_datetime=end)
+
+    assert "model_path" in captured
+    assert captured["model_path"] == LGBM_MODEL_DIR
+
+
+def test_create_input_df_passes_custom_model_path_to_run_inference(monkeypatch, config_stub):
+    """Verifies an explicit model_path is forwarded unchanged to run_inference."""
+    from pathlib import Path
+
+    start = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
+    end = start + timedelta(hours=24)
+    custom_path = Path("/custom/model/dir")
+    captured: dict = {}
+
+    def fake_generate_pv_power_for_date_range(*, config, start_datetime, end_datetime, **kwargs):
+        return pd.DataFrame(
+            {"timestamp_utc": _dt_range_15m(start, periods=1), "generation_kw": [0]}
+        )
+
+    def fake_run_inference(**kwargs):
+        captured.update(kwargs)
+        return pd.DataFrame({"Timestamp": _dt_range_15m(start, periods=1), "Price_pred": [1.0]})
+
+    monkeypatch.setattr(
+        m, "generate_pv_power_for_date_range", fake_generate_pv_power_for_date_range
+    )
+    monkeypatch.setattr(m, "run_inference", fake_run_inference)
+
+    _ = m.create_input_df(
+        config=config_stub,
+        start_datetime=start,
+        end_datetime=end,
+        model_path=custom_path,
+    )
+
+    assert captured["model_path"] == custom_path

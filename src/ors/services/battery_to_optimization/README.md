@@ -257,6 +257,57 @@ validation_results = {
 - Check that all required packages are installed
 - Ensure Python path includes the battery module
 
+## Testing and Validation
+
+### `test.py` — Comprehensive Test Suite
+
+Provides comprehensive unit testing and validation for all integration functions with pytest-based test framework.
+
+**Test Coverage:**
+- `TestLoadOptimizerBatteryConfig`: Configuration loading and validation
+- `TestCreateOptimizerLogEntries`: Log entry creation and data processing
+- `TestValidateOptimizerEnergyBalance`: Energy balance validation algorithms
+- `TestExportOptimizerResults`: CSV export functionality and output formats
+- `TestCreateEnhancedOptimizerOutput`: End-to-end integration workflow
+- `TestWriteStepByStepBatteryLog`: Detailed step logging and file I/O
+- `TestIntegration`: Complete integration testing with realistic scenarios
+
+**Key Testing Features:**
+- **Configuration Validation**: Tests against valid and invalid battery configurations
+- **Data Pipeline Testing**: Validates optimizer DataFrame processing and transformation
+- **Error Handling**: Tests edge cases, missing data, and invalid inputs
+- **CSV Output Validation**: Tests output formatting, file I/O, and data integrity
+- **Energy Balance Verification**: Tests physics equation validation against optimizer results
+- **Integration Testing**: End-to-end workflow testing with realistic datasets
+
+**Running Tests:**
+```bash
+# Run all tests with pytest
+python -m pytest test.py -v
+
+# Run specific test class
+python -m pytest test.py::TestCreateOptimizerLogEntries -v
+
+# Run with coverage reporting
+python -m pytest test.py --cov=battery_inference --cov-report=html
+
+# Run tests directly (alternative)
+python test.py
+```
+
+**Test Data and Fixtures:**
+- Temporary file creation for configuration testing
+- Mock battery parameters for isolated testing
+- Sample optimizer DataFrame generation for pipeline testing
+- Realistic battery physics scenarios for validation testing
+
+**Error Pattern Testing:**
+- Invalid configuration file handling
+- Missing required columns in optimizer data
+- Energy balance violation detection
+- File I/O error handling and recovery
+- Parameter validation and boundary condition testing
+
 ## Examples
 
 ### Typical Output Log

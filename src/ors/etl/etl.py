@@ -21,12 +21,12 @@ def standardize_timestamp_column(
     to *target_column*, coerces it to ``datetime64`` and strips any timezone info.
 
     Args:
-        dataframe: Input DataFrame that contains a timestamp-like column.
-        candidates: Ordered list of column names to search for the timestamp.
-        target_column: Desired name for the resulting timestamp column.
+        dataframe (pd.DataFrame): Input DataFrame that contains a timestamp-like column.
+        candidates (list[str]): Ordered list of column names to search for the timestamp.
+        target_column (str): Desired name for the resulting timestamp column.
 
     Returns:
-        The modified DataFrame with a tz-naive ``datetime64`` timestamp column.
+        pd.DataFrame: The modified DataFrame with a tz-naive ``datetime64`` timestamp column.
 
     Raises:
         ValueError: If none of the candidate column names are present in *dataframe*.
@@ -54,12 +54,12 @@ def generate_time_data(
     weekends, public holidays and working days.
 
     Args:
-        start_date: Inclusive start of the date range.
-        end_date: Inclusive end of the date range.
-        country_holidays: ISO country code passed to ``holidays.CountryHoliday``.
+        start_date (pd.Timestamp): Inclusive start of the date range.
+        end_date (pd.Timestamp): Inclusive end of the date range.
+        country_holidays (str): ISO country code passed to ``holidays.CountryHoliday``.
 
     Returns:
-        DataFrame with a ``Timestamp`` column plus derived time-feature columns.
+        pd.DataFrame: DataFrame with a ``Timestamp`` column plus derived time-feature columns.
 
     """
     time_data = pd.DataFrame({"Timestamp": pd.date_range(start=start_date, end=end_date, freq="h")})
@@ -90,10 +90,10 @@ def transform_time_data(time_data: pd.DataFrame) -> pd.DataFrame:
     ``<col>_sin`` and ``<col>_cos`` features.
 
     Args:
-        time_data: DataFrame produced by :func:`generate_time_data`.
+        time_data (pd.DataFrame): DataFrame produced by :func:`generate_time_data`.
 
     Returns:
-        Transformed DataFrame with cyclic-encoded columns in place of the originals.
+        pd.DataFrame: Transformed DataFrame with cyclic-encoded columns in place of the originals.
 
     """
     # All bool remain as bool, no transformation needed
@@ -114,10 +114,10 @@ def transform_weather_data(weather_data: pd.DataFrame) -> pd.DataFrame:
     """Normalise numeric weather columns to [0, 1] and resample to hourly frequency.
 
     Args:
-        weather_data: Raw weather DataFrame with a ``Timestamp`` column.
+        weather_data (pd.DataFrame): Raw weather DataFrame with a ``Timestamp`` column.
 
     Returns:
-        Normalised, hourly-resampled weather DataFrame.
+        pd.DataFrame: Normalised, hourly-resampled weather DataFrame.
 
     """
     # Normalize numeric columns except Timestamp
@@ -145,11 +145,11 @@ def transform_sun_data(sun_data: pd.DataFrame) -> pd.DataFrame:
     a ``Solar_intensity`` column using a cosine model centred on solar noon.
 
     Args:
-        sun_data: Daily DataFrame with ``Timestamp``, ``sunrise``, ``sunset`` and
+        sun_data (pd.DataFrame): Daily DataFrame with ``Timestamp``, ``sunrise``, ``sunset`` and
             ``daylight_duration`` columns.
 
     Returns:
-        Hourly DataFrame with a ``Solar_intensity`` column; sunrise/sunset/daylight
+        pd.DataFrame: Hourly DataFrame with a ``Solar_intensity`` column; sunrise/sunset/daylight
         columns are dropped.
 
     """
@@ -170,10 +170,10 @@ def transform_price_data(price_data: pd.DataFrame) -> pd.DataFrame:
     """Aggregate price data to hourly resolution and drop redundant time columns.
 
     Args:
-        price_data: Raw price DataFrame with a ``Timestamp`` column.
+        price_data (pd.DataFrame): Raw price DataFrame with a ``Timestamp`` column.
 
     Returns:
-        Hourly-aggregated price DataFrame.
+        pd.DataFrame: Hourly-aggregated price DataFrame.
 
     """
     # Normalise legacy typo column names that appeared in the original training CSV
@@ -206,10 +206,10 @@ def get_timestamp_range(dataframe: pd.DataFrame) -> tuple[pd.Timestamp, pd.Times
     """Return the minimum and maximum timestamp values in a DataFrame.
 
     Args:
-        dataframe: DataFrame with a ``Timestamp`` column.
+        dataframe (pd.DataFrame): DataFrame with a ``Timestamp`` column.
 
     Returns:
-        Tuple of ``(min_timestamp, max_timestamp)``.
+        tuple[pd.Timestamp, pd.Timestamp]: Tuple of ``(min_timestamp, max_timestamp)``.
 
     """
     timestamps = pd.to_datetime(dataframe["Timestamp"], errors="coerce")
@@ -224,12 +224,12 @@ def filter_by_timestamp_range(
     """Filter a DataFrame to rows whose ``Timestamp`` falls within [start_date, end_date].
 
     Args:
-        dataframe: DataFrame with a ``Timestamp`` column.
-        start_date: Inclusive lower bound for the timestamp filter.
-        end_date: Inclusive upper bound for the timestamp filter.
+        dataframe (pd.DataFrame): DataFrame with a ``Timestamp`` column.
+        start_date (pd.Timestamp): Inclusive lower bound for the timestamp filter.
+        end_date (pd.Timestamp): Inclusive upper bound for the timestamp filter.
 
     Returns:
-        Filtered copy of the DataFrame.
+        pd.DataFrame: Filtered copy of the DataFrame.
 
     """
     mask = (dataframe["Timestamp"] >= start_date) & (dataframe["Timestamp"] <= end_date)
@@ -240,7 +240,7 @@ def log_dataset_ranges(ranges_by_name: dict[str, tuple[pd.Timestamp, pd.Timestam
     """Print the timestamp range for each dataset to stdout.
 
     Args:
-        ranges_by_name: Mapping from dataset name to ``(min_timestamp, max_timestamp)``.
+        ranges_by_name (dict[str, tuple[pd.Timestamp, pd.Timestamp]]): Mapping from dataset name to ``(min_timestamp, max_timestamp)``.
 
     """
     print("Timestamp ranges used for merge:")
@@ -257,13 +257,13 @@ def merge_datasets(
     """Merge price, weather, sun and time DataFrames on the ``Timestamp`` column.
 
     Args:
-        price_data: Hourly price DataFrame.
-        weather_data: Hourly weather DataFrame.
-        sun_data: Hourly solar intensity DataFrame.
-        time_data: Hourly time-feature DataFrame.
+        price_data (pd.DataFrame): Hourly price DataFrame.
+        weather_data (pd.DataFrame): Hourly weather DataFrame.
+        sun_data (pd.DataFrame): Hourly solar intensity DataFrame.
+        time_data (pd.DataFrame): Hourly time-feature DataFrame.
 
     Returns:
-        Left-merged DataFrame combining all four sources on ``Timestamp``.
+        pd.DataFrame: Left-merged DataFrame combining all four sources on ``Timestamp``.
 
     """
     # Merge on Timestamp
@@ -282,12 +282,12 @@ def add_lagged_features(
     """Append lagged copies of all numeric columns to a DataFrame.
 
     Args:
-        dataframe: Time-sorted DataFrame with a ``Timestamp`` column.
-        lag_steps: Sequence of integer lag offsets (in rows) to generate.
-        drop_na: If ``True``, rows introduced as ``NaN`` by the maximum lag are dropped.
+        dataframe (pd.DataFrame): Time-sorted DataFrame with a ``Timestamp`` column.
+        lag_steps (tuple[int, ...]): Sequence of integer lag offsets (in rows) to generate.
+        drop_na (bool): If ``True``, rows introduced as ``NaN`` by the maximum lag are dropped.
 
     Returns:
-        DataFrame extended with ``<col>_lag_<n>h`` columns for every numeric column
+        pd.DataFrame: DataFrame extended with ``<col>_lag_<n>h`` columns for every numeric column
         and each lag step.
 
     Raises:
@@ -330,14 +330,14 @@ def preprocess_merge(
     per-source transformations, merges them, then engineers lagged features.
 
     Args:
-        price_data: Raw price DataFrame with a ``Timestamp`` column.
-        weather_data: Raw hourly weather DataFrame.
-        sun_data: Raw daily sun DataFrame.
-        lag_steps: Lag offsets (in hours) to create for all numeric features.
-        drop_na: Whether to drop rows with ``NaN`` values introduced by lagging.
+        price_data (pd.DataFrame): Raw price DataFrame with a ``Timestamp`` column.
+        weather_data (pd.DataFrame): Raw hourly weather DataFrame.
+        sun_data (pd.DataFrame): Raw daily sun DataFrame.
+        lag_steps (tuple[int, ...]): Lag offsets (in hours) to create for all numeric features.
+        drop_na (bool): Whether to drop rows with ``NaN`` values introduced by lagging.
 
     Returns:
-        Fully processed and merged DataFrame ready for model training.
+        pd.DataFrame: Fully processed and merged DataFrame ready for model training.
 
     Raises:
         ValueError: If any dataset has an invalid timestamp range or there is no

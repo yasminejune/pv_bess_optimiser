@@ -27,13 +27,15 @@ generate_pv_power_for_date_range()\
 ↓\
 PV DataFrame (timestamp_utc, generation_kw)\
 ↓\
-run_inference(\*\*kwargs)\
+run_inference(model_path=LGBM_MODEL_DIR, \*\*kwargs)\
 ↓\
-Price DataFrame (timestamp_utc, price, ...)\
+Price DataFrame (Timestamp → timestamp_utc, Price_pred → price_intraday)\
 ↓\
 Outer merge on timestamp_utc\
 ↓\
-Combined Optimizer Input DataFrame
+Column rename: timestamp_utc → timestamp, Price_pred → price_intraday\
+↓\
+Combined Optimizer Input DataFrame (96 rows, 15-min UTC)
 
 ------------------------------------------------------------------------
 
@@ -49,12 +51,15 @@ Combined Optimizer Input DataFrame
 
 3.  Generates 15-minute PV production forecast.
 
-4.  Runs the price prediction model using the supplied `**kwargs`.
+4.  Runs the price prediction model — defaults to the LGBM
+    `ForecasterRecursive` in `LGBM_MODEL_DIR`; pass `model_path` to override.
 
 5.  Merges PV and price data on `timestamp_utc` using an outer join.
 
-6.  Returns a timestamp-sorted DataFrame ready for optimizer
-    consumption.
+6.  Renames columns: `timestamp_utc` → `timestamp`, `Price_pred` →
+    `price_intraday`.
+
+7.  Returns the first 96 rows (24 hours at 15-minute resolution).
 
 ------------------------------------------------------------------------
 
@@ -92,20 +97,37 @@ df = create_input_df(
 
 ### Passing Price Model Inputs
 
-`**kwargs` are forwarded directly to `run_inference()`.
-
-Example:
+`model_path` selects the price model.  It defaults to `LGBM_MODEL_DIR`
+(`models/price_prediction/lgbm_recursive_single_model`), so no argument is
+needed for the standard LGBM workflow.
 
 ``` python
 from pathlib import Path
 
+# Default — uses the most recent LGBM .joblib in LGBM_MODEL_DIR
+df = create_input_df(config=config)
+
+# Explicit LGBM directory
+df = create_input_df(
+    config=config,
+    model_path=Path("models/price_prediction/lgbm_recursive_single_model"),
+)
+
+# Specific LGBM .joblib file
+df = create_input_df(
+    config=config,
+    model_path=Path("models/price_prediction/lgbm_recursive_single_model/recursive_single_model_20260306_132459.joblib"),
+)
+
+# Legacy XGBoost model
 df = create_input_df(
     config=config,
     model_path=Path("models/price_prediction/model.pkl"),
     lag_steps=(1, 2, 3, 6, 12, 24),
-    output_path=Path("Data/live_price_predictions.csv"),
 )
 ```
+
+Additional `**kwargs` are forwarded directly to `run_inference()`.
 
 ------------------------------------------------------------------------
 
@@ -118,6 +140,7 @@ def create_input_df(
     client: Any | None = None,
     start_datetime: datetime | None = None,
     end_datetime: datetime | None = None,
+    model_path: Path = LGBM_MODEL_DIR,
     **kwargs,
 ) -> pd.DataFrame
 ```
@@ -157,16 +180,21 @@ This ensures:
 
 ## Output
 
-A DataFrame sorted by `timestamp_utc`.
+A DataFrame of exactly 96 rows (24 hours at 15-minute resolution), sorted by
+`timestamp`.
 
 Typical structure:
 
-  timestamp               generation_kw   price   ...
-  --------------------------- --------------- ------------------ -----
-  2026-03-01 10:00:00+00:00   12500.0         85.12              ...
-  2026-03-01 10:15:00+00:00   14200.0         83.95              ...
+  timestamp                   generation_kw   price_intraday
+  --------------------------- --------------- ---------------
+  2026-03-01 10:00:00+00:00   12500.0         85.12
+  2026-03-01 10:15:00+00:00   14200.0         83.95
 
-Columns depend on what `run_inference()` returns.
+Key columns:
+
+- `timestamp` — UTC-aware `datetime64[ns, UTC]`
+- `generation_kw` — PV generation forecast in kW
+- `price_intraday` — LGBM price forecast in £/MWh
 
 ------------------------------------------------------------------------
 
@@ -187,6 +215,10 @@ Columns depend on what `run_inference()` returns.
 -   Timestamp alignment assumes both services operate at 15-minute
     resolution.
 -   No automatic gap filling or interpolation is performed.
+-   The LGBM model must be trained before calling `create_input_df`.
+    Run `python -m ors.services.prediction.train_script --model-name lgbm_recursive`
+    from the repo root if `models/price_prediction/lgbm_recursive_single_model/`
+    is empty or missing.
 
 ------------------------------------------------------------------------
 

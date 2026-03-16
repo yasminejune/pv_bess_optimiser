@@ -1,4 +1,4 @@
-"""PDF report generation for XGBoost model evaluation results."""
+"""PDF report generation for model evaluation results (LightGBM and XGBoost)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.backends.backend_pdf import PdfPages
 
-from .data_pipeline import build_merged_dataset
+from .data_pipeline import build_merged_dataset, get_feature_cols
 from .prediction_model import prepare_features, resolve_target_column, time_based_split
 
 
@@ -279,35 +279,86 @@ def build_report(
     if merged_df is None:
         merged_df = build_merged_dataset(project_root)
 
-    resolved_target = resolve_target_column(merged_df, target_col)
-    features, target = prepare_features(merged_df, target_col=resolved_target)
-    x_train, x_test, y_train, y_test = time_based_split(features, target, test_size=test_size)
-    split_idx = len(x_train)
+    is_lgbm = "lgbm" in model_name.lower() or "horizon" in metadata
 
-    test_df = merged_df.iloc[split_idx:][["Timestamp", resolved_target]].copy()
-    test_df = test_df.rename(columns={resolved_target: "Price_true"}).reset_index(drop=True)
+    if is_lgbm:
+        # ------------------------------------------------------------------ #
+        # LightGBM path: use saved predictions and metadata directly         #
+        # ------------------------------------------------------------------ #
+        feature_list = get_feature_cols(merged_df)
 
-    if "Price_true" in preds.columns:
         analysis_df = preds.copy()
+        analysis_df = analysis_df.sort_values("Timestamp").reset_index(drop=True)
+        analysis_df["Residual"] = analysis_df["Price_pred"] - analysis_df["Price_true"]
+
+        horizon = metadata.get("horizon", 96)
+        max_lag = metadata.get("max_lag", "N/A")
+        n_estimators = metadata.get("n_estimators", "N/A")
+        train_end_idx = metadata.get("train_end_idx", "N/A")
+        val_steps = 21 * 24 * 4
+        test_steps = 21 * 24 * 4
+
+        encoding_notes = [
+            "Model: LightGBM ForecasterRecursive (skforecast).",
+            f"Horizon: {horizon} steps (24 h at 15-min resolution).",
+            "Lags: 1–48 + sparse tail up to 672 (7 days).",
+            "Rolling window features: mean/std/min/max over 8 window sizes.",
+            "Training window: most recent 180 days.",
+            f"Validation split: {val_steps} steps (21 days).",
+            f"Test split: {test_steps} steps (21 days).",
+            "Price outlier patching: ±2 std replaced with time-slot median.",
+            "Weather: hourly interpolated to 15-min; daily forward-filled.",
+            "Features: weather, demand, daily solar, cyclic time encodings, calendar.",
+        ]
+
+        report_lines = [
+            f"Model: {model_name}",
+            f"Rows total: {metadata.get('row_count', len(merged_df))}",
+            f"Feature count: {metadata.get('feature_count', len(feature_list))}",
+            f"n_estimators: {n_estimators}",
+            f"Horizon: {horizon} steps",
+            f"Max lag (window_size): {max_lag}",
+            f"Train end index: {train_end_idx}",
+            f"Validation steps: {val_steps}  ({val_steps // (24 * 4)} days)",
+            f"Test steps: {test_steps}  ({test_steps // (24 * 4)} days)",
+            f"Time range: {merged_df['Timestamp'].min()} to {merged_df['Timestamp'].max()}",
+        ]
+
     else:
-        analysis_df = preds.merge(test_df, on="Timestamp", how="left")
-    analysis_df = analysis_df.sort_values("Timestamp").reset_index(drop=True)
-    analysis_df["Residual"] = analysis_df["Price_pred"] - analysis_df["Price_true"]
+        # ------------------------------------------------------------------ #
+        # XGBoost (legacy) path                                               #
+        # ------------------------------------------------------------------ #
+        resolved_target = resolve_target_column(merged_df, target_col)
+        features, target = prepare_features(merged_df, target_col=resolved_target)
+        x_train, x_test, y_train, y_test = time_based_split(features, target, test_size=test_size)
+        split_idx = len(x_train)
 
-    encoding_notes = [
-        "Timestamp dropped from model features.",
-        "Boolean features cast to integer (0/1).",
-        "Missing values filled with median per feature.",
-    ]
+        feature_list = list(features.columns)
 
-    report_lines = [
-        f"Model: {model_name}",
-        f"Rows total: {len(merged_df)}",
-        f"Train rows: {len(x_train)}",
-        f"Test rows: {len(x_test)}",
-        f"Test size: {test_size:.2f}",
-        f"Time range: {merged_df['Timestamp'].min()} to {merged_df['Timestamp'].max()}",
-    ]
+        test_df = merged_df.iloc[split_idx:][["Timestamp", resolved_target]].copy()
+        test_df = test_df.rename(columns={resolved_target: "Price_true"}).reset_index(drop=True)
+
+        if "Price_true" in preds.columns:
+            analysis_df = preds.copy()
+        else:
+            analysis_df = preds.merge(test_df, on="Timestamp", how="left")
+        analysis_df = analysis_df.sort_values("Timestamp").reset_index(drop=True)
+        analysis_df["Residual"] = analysis_df["Price_pred"] - analysis_df["Price_true"]
+
+        encoding_notes = [
+            "Timestamp dropped from model features.",
+            "Boolean features cast to integer (0/1).",
+            "Missing values filled with median per feature.",
+        ]
+
+        report_lines = [
+            f"Model: {model_name}",
+            f"Rows total: {len(merged_df)}",
+            f"Train rows: {len(x_train)}",
+            f"Test rows: {len(x_test)}",
+            f"Test size: {test_size:.2f}",
+            f"Time range: {merged_df['Timestamp'].min()} to {merged_df['Timestamp'].max()}",
+        ]
 
     if metrics:
         report_lines.append(" ")
@@ -320,15 +371,19 @@ def build_report(
         report_lines.append(" ")
         report_lines.append("Model metadata:")
         for key, value in metadata.items():
-            report_lines.append(f"- {key}: {value}")
+            if not isinstance(value, (list, dict)):
+                report_lines.append(f"- {key}: {value}")
 
     metrics_df = (
         pd.DataFrame([metrics]) if metrics else pd.DataFrame(columns=["mae", "rmse", "mape", "r2"])
     )
     features_df = pd.DataFrame(
         {
-            "feature": list(features.columns),
-            "type": [str(dtype) for dtype in features.dtypes],
+            "feature": feature_list,
+            "type": [
+                str(merged_df[c].dtype) if c in merged_df.columns else "unknown"
+                for c in feature_list
+            ],
         }
     )
 

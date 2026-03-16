@@ -1,0 +1,5 @@
+simulation_step,elapsed_time_hours,timestamp_iso,time_step_hours,grid_power_mw,solar_power_mw,discharge_power_mw,energy_before_mwh,energy_after_mwh,energy_in_from_grid_mwh,energy_in_from_solar_mwh,energy_in_total_mwh,energy_out_total_mwh,loss_charging_inefficiency_mwh,loss_discharge_inefficiency_mwh,loss_auxiliary_power_mwh,loss_self_discharge_mwh,loss_total_mwh
+0,0.0,2026-03-08T00:00:00,0.25,0.0,0.0,0.0,99.8625,99.8625,0.0,0.0,0.0,0.0,0.0,0.0,0.125,0.012483,0.137483
+1,0.25,2026-03-08T00:15:00,0.25,0.0,0.0,0.0,99.8625,99.725017,0.0,0.0,0.0,0.0,0.0,0.0,0.125,0.012483,0.137483
+2,0.5,2026-03-08T00:30:00,0.25,0.0,0.0,100.0,99.725017,73.814356,0.0,0.0,0.0,25.773196,0.0,0.773196,0.125,0.012466,0.910662
+3,0.75,2026-03-08T00:45:00,0.25,0.0,0.0,100.0,73.814356,47.906933,0.0,0.0,0.0,25.773196,0.0,0.773196,0.125,0.009227,0.907423

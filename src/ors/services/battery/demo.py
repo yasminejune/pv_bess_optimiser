@@ -283,11 +283,11 @@ def main() -> None:
 
     try:
         params, defaults = load_battery_params_and_defaults(config_path)
-        print(f"✓ Loaded configuration from {config_path}")
+        print(f"Success: Loaded configuration from {config_path}")
         print(f"  Battery: {params.p_rated_mw} MW / {params.e_cap_mwh} MWh")
         print(f"  Time step: {defaults['dt_hours']} hours")
     except FileNotFoundError:
-        print(f"⚠ Config file {config_path} not found. Using default parameters.")
+        print(f"Warning: Config file {config_path} not found. Using default parameters.")
         params = BatteryParams()
         defaults = {"dt_hours": 0.25, "enforce_bounds": True}
 
@@ -297,7 +297,7 @@ def main() -> None:
     )
 
     # 3. Generate power profiles for 24 hours (96 steps at 15-min intervals)
-    print("\n📊 Setting up simulation...")
+    print("\nInfo: Setting up simulation...")
 
     num_steps = 96  # 24 hours at 15-minute intervals
     power_profiles = create_example_power_profiles(num_steps)
@@ -310,7 +310,7 @@ def main() -> None:
     print(f"  Time step: {defaults['dt_hours']} hours ({defaults['dt_hours']*60} minutes)")
 
     # 4. Run simulation
-    print("\n🔄 Running simulation...")
+    print("\nInfo: Running simulation...")
 
     try:
         logs = simulator.run_simulation(
@@ -318,18 +318,18 @@ def main() -> None:
             power_profiles=power_profiles,
             start_datetime=start_time,
         )
-        print(f"✓ Simulation completed: {len(logs)} steps processed")
+        print(f"Success: Simulation completed: {len(logs)} steps processed")
 
         # Export to CSV
         simulator.export_to_csv("src/ors/services/battery/battery_storage.csv")
-        print("✓ Results exported to src/ors/services/battery/battery_storage.csv")
+        print("Success: Results exported to src/ors/services/battery/battery_storage.csv")
 
     except Exception as e:
-        print(f"✗ Simulation failed: {e}")
+        print(f"Error: Simulation failed: {e}")
         return
 
     # 5. Analyze results
-    print("\n📈 Analysis Results:")
+    print("\nAnalysis Results:")
     print("-" * 30)
 
     analysis = analyze_simulation_results(logs)
@@ -364,7 +364,7 @@ def main() -> None:
         print(f"\nRound-trip efficiency: {efficiency:.1f}%")
 
     # Peak examples
-    print("\n📊 Peak Activity Examples:")
+    print("\nPeak Activity Examples:")
     print("Time  | Grid | Solar | Disc | Energy | Losses")
     print("-" * 50)
 
@@ -383,13 +383,13 @@ def main() -> None:
                 f"{log['loss_total_mwh']:6.3f}"
             )
 
-    print("\n✅ Demo completed successfully!")
-    print("\n📊 This demonstrates how to build simulations using:")
+    print("\nSuccess: Demo completed successfully!")
+    print("\nInfo: This demonstrates how to build simulations using:")
     print("  - config_loader.py: Load battery configuration")
     print("  - battery_management.py: Core battery physics (step_energy, compute_losses)")
     print("  - csv_logger.py: Export simulation data")
-    print("\n🔧 Check src/ors/services/battery/battery_storage.csv for full simulation data.")
-    print("📝 Modify power_profiles in this script to test different scenarios.")
+    print("\nInfo: Check src/ors/services/battery/battery_storage.csv for full simulation data.")
+    print("Info: Modify power_profiles in this script to test different scenarios.")
 
 
 if __name__ == "__main__":

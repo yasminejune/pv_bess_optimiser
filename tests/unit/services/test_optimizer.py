@@ -14,7 +14,6 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from pyomo.environ import ConcreteModel, SolverFactory, maximize, value
-
 from src.ors.services.optimizer.optimizer import (
     E_MAX,
     E_MIN,
@@ -355,7 +354,16 @@ class TestLoadInputs:
         _, _, p_30, *_ = load_inputs(str(dummy_intraday_csv), str(hist_csv))
         assert p_30 == pytest.approx(77.0)
 
-    def test_load_inputs_with_real_test_data(self):
+    def test_load_inputs_with_real_test_data(self, monkeypatch):
+        # load_inputs now calls create_input_df(**kwargs) internally;
+        # stub it with the real test CSV (renamed to match expected columns).
+        raw = pd.read_csv(_INTRADAY_CSV)
+        intraday_df = raw.rename(columns={"solar_MW": "generation_kw"})
+
+        import src.ors.services.optimizer.optimizer as opt_mod
+
+        monkeypatch.setattr(opt_mod, "create_input_df", lambda *a, **kw: intraday_df)
+
         price, solar, p_30, *_ = load_inputs(str(_INTRADAY_CSV), str(_HISTORIC_CSV))
         assert len(price) == 96
         assert len(solar) == 96
@@ -458,7 +466,14 @@ class TestSolverBehaviour:
         total_dis = sum(value(m.P_dis[t]) for t in m.T)
         assert total_dis == pytest.approx(0.0, abs=1e-3)
 
-    def test_solution_with_real_test_data(self, solver):
+    def test_solution_with_real_test_data(self, solver, monkeypatch):
+        # load_inputs calls create_input_df internally; stub it with the real CSV.
+        raw = pd.read_csv(_INTRADAY_CSV)
+        intraday_df = raw.rename(columns={"solar_MW": "generation_kw"})
+        import src.ors.services.optimizer.optimizer as opt_mod
+
+        monkeypatch.setattr(opt_mod, "create_input_df", lambda *a, **kw: intraday_df)
+
         price, solar, p_30, *_ = load_inputs(str(_INTRADAY_CSV), str(_HISTORIC_CSV))
 
         # If create_input_df() produced NaN/inf solar (e.g., missing mapping), sanitize.

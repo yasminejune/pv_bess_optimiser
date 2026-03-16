@@ -37,6 +37,10 @@ class WeatherToPVColumns:
 def _require_columns(df: pd.DataFrame, required: Iterable[str]) -> None:
     """Ensure required columns exist in the DataFrame.
 
+    Args:
+        df (pd.DataFrame): DataFrame to check
+        required (Iterable[str]): Column names that must be present
+
     Raises:
         ValueError: If any required column is missing.
     """
@@ -58,6 +62,13 @@ def hourly_weather_df_to_pv_telemetry(
 
     PVTelemetry expects solar_radiance_kw_per_m2, so conversion is:
         kW/m^2 = (W/m^2) / 1000.
+
+    Args:
+        hourly_df (pd.DataFrame): Open-Meteo hourly weather data
+        cols (WeatherToPVColumns): Column mapping configuration
+
+    Returns:
+        list[PVTelemetry]: List of telemetry objects with solar radiance data
     """
     _require_columns(
         hourly_df,
@@ -105,6 +116,15 @@ def pv_states_from_hourly_weather_df(
 
     This function converts hourly Open-Meteo data into PVTelemetry,
     then applies the PV model logic to compute PVState outputs.
+
+    Args:
+        spec (PVSpec): PV system specification
+        hourly_df (pd.DataFrame): Hourly weather data
+        timestep_minutes (int): Time step duration in minutes
+        cols (WeatherToPVColumns): Column mapping configuration
+
+    Returns:
+        list[PVState]: List of computed PV states
     """
     telemetry = hourly_weather_df_to_pv_telemetry(
         hourly_df,
@@ -135,6 +155,15 @@ def fetch_live_pv_states_from_openmeteo(
         2. Convert to hourly DataFrame.
         3. Transform to PVTelemetry.
         4. Produce PVState outputs via PV model logic.
+
+    Args:
+        spec (PVSpec): PV system specification
+        client (Any | None): Open-Meteo client instance
+        params (dict[str, Any] | None): API request parameters
+        timestep_minutes (int): Time step duration in minutes
+
+    Returns:
+        list[PVState]: List of computed PV states from live forecast
     """
     if client is None:
         client = weather_client.make_client()
@@ -171,18 +200,18 @@ def generate_pv_power_for_date_range(
     PV power calculation logic to produce generation estimates.
 
     Args:
-        config: PV site configuration (MW units). Use a predefined config
+        config (PVSiteConfig): PV site configuration (MW units). Use a predefined config
             from :data:`ors.config.pv_config.PV_SITE_CONFIGS` or create a
             custom :class:`~ors.config.pv_config.PVSiteConfig`.
-        client: Open-Meteo client; created automatically when ``None``.
-        start_datetime: Timezone-aware start of the requested window.
+        client (Any | None): Open-Meteo client; created automatically when ``None``.
+        start_datetime (datetime | None): Timezone-aware start of the requested window.
             Defaults to the current UTC time.
-        end_datetime: Timezone-aware end of the requested window.
+        end_datetime (datetime | None): Timezone-aware end of the requested window.
             Defaults to 48 hours after *start_datetime*.
 
     Returns:
-        DataFrame with ``timestamp_utc`` and ``generation_kw`` columns
-        at 15-minute intervals.
+        pd.DataFrame: DataFrame with ``timestamp_utc`` and ``generation_kw`` columns
+            at 15-minute intervals.
 
     Raises:
         WeatherFetcherError: If the weather API call fails or returns

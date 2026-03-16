@@ -1,4 +1,4 @@
-"""CLI entry-point: train an XGBoost model and generate a PDF report in one command."""
+"""CLI entry-point: train a LightGBM recursive model and generate a PDF report in one command."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(description="Run training and generate a report.")
     parser.add_argument("--project-root", type=Path, default=None)
-    parser.add_argument("--model-name", type=str, default="xgboost")
+    parser.add_argument("--model-name", type=str, default="lgbm_recursive")
     parser.add_argument("--test-size", type=float, default=0.2)
     return parser.parse_args()
 

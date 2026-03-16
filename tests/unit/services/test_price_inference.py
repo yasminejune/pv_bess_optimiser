@@ -10,7 +10,7 @@ Covers:
 from __future__ import annotations
 
 import pickle
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -346,6 +346,289 @@ def test_build_live_merged_dataset_passes_reference_time(monkeypatch):
     monkeypatch.setattr(ldp, "_fetch_live_price", fake_price)
 
     ldp.build_live_merged_dataset(lag_steps=(1,), reference_time=ref)
+
+    assert captured["weather_ref"] == ref
+    assert captured["price_ref"] == ref
+
+
+# ---------------------------------------------------------------------------
+# find_latest_lgbm_model
+# ---------------------------------------------------------------------------
+
+
+def test_find_latest_lgbm_model_missing_dir_raises(tmp_path):
+    missing = tmp_path / "nonexistent_dir"
+    with pytest.raises(FileNotFoundError, match="LGBM model directory not found"):
+        li.find_latest_lgbm_model(missing)
+
+
+def test_find_latest_lgbm_model_empty_dir_raises(tmp_path):
+    with pytest.raises(FileNotFoundError, match="No LGBM model files found"):
+        li.find_latest_lgbm_model(tmp_path)
+
+
+def test_find_latest_lgbm_model_returns_most_recent(tmp_path):
+    (tmp_path / "recursive_single_model_20260101_100000.joblib").touch()
+    newer = tmp_path / "recursive_single_model_20260101_110000.joblib"
+    newer.touch()
+    meta = tmp_path / "recursive_single_model_20260101_110000_meta.joblib"
+    meta.touch()
+
+    model_path, meta_path = li.find_latest_lgbm_model(tmp_path)
+
+    assert model_path == newer
+    assert meta_path == meta
+
+
+def test_find_latest_lgbm_model_no_meta_returns_none(tmp_path):
+    (tmp_path / "recursive_single_model_20260101_100000.joblib").touch()
+
+    _, meta_path = li.find_latest_lgbm_model(tmp_path)
+
+    assert meta_path is None
+
+
+def test_find_latest_lgbm_model_excludes_meta_files(tmp_path):
+    model = tmp_path / "recursive_single_model_20260101_100000.joblib"
+    model.touch()
+    (tmp_path / "recursive_single_model_20260101_100000_meta.joblib").touch()
+
+    model_path, _ = li.find_latest_lgbm_model(tmp_path)
+
+    assert model_path == model
+    assert "_meta" not in model_path.stem
+
+
+# ---------------------------------------------------------------------------
+# load_model — directory dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_load_model_with_directory_delegates_to_find_latest(tmp_path, monkeypatch):
+    """load_model(dir) calls find_latest_lgbm_model and loads the resolved file."""
+    model_obj = SimpleNamespace(name="lgbm_dummy")
+    pkl_path = tmp_path / "lgbm_model.pkl"
+    with open(pkl_path, "wb") as fh:
+        pickle.dump(model_obj, fh)
+
+    # Redirect find_latest_lgbm_model to our pkl file to avoid joblib dependency
+    monkeypatch.setattr(li, "find_latest_lgbm_model", lambda d: (pkl_path, None))
+
+    loaded = li.load_model(tmp_path)
+
+    assert loaded.name == "lgbm_dummy"
+
+
+# ---------------------------------------------------------------------------
+# _is_lgbm_forecaster
+# ---------------------------------------------------------------------------
+
+
+def test_is_lgbm_forecaster_true_when_class_name_matches():
+    class ForecasterRecursive:
+        pass
+
+    assert li._is_lgbm_forecaster(ForecasterRecursive()) is True
+
+
+def test_is_lgbm_forecaster_false_for_other_types():
+    assert li._is_lgbm_forecaster(object()) is False
+    assert li._is_lgbm_forecaster(SimpleNamespace()) is False
+
+
+# ---------------------------------------------------------------------------
+# _extract_lgbm_inputs
+# ---------------------------------------------------------------------------
+
+
+def test_extract_lgbm_inputs_returns_correct_shapes():
+    ref = datetime(2025, 6, 1, 0, 0, tzinfo=timezone.utc)
+    ref_naive = pd.Timestamp(ref).tz_convert(None).floor("15min")
+
+    past_times = [ref_naive - pd.Timedelta(minutes=15 * (39 - i)) for i in range(40)]
+    future_times = pd.date_range(ref_naive, periods=4, freq="15min")
+
+    df = pd.concat(
+        [
+            pd.DataFrame({"Timestamp": past_times, "price": np.ones(40) * 50.0, "f1": np.ones(40)}),
+            pd.DataFrame({"Timestamp": future_times, "price": [np.nan] * 4, "f1": np.ones(4)}),
+        ],
+        ignore_index=True,
+    )
+
+    window_size = 10
+    last_window, exog, forecast_index = li._extract_lgbm_inputs(
+        df, feature_cols=["f1"], window_size=window_size, forecast_steps=4, reference_time=ref
+    )
+
+    assert len(last_window) == window_size
+    assert len(exog) == 4
+    assert len(forecast_index) == 4
+
+
+def test_extract_lgbm_inputs_exog_index_starts_at_window_size():
+    """exog.index[0] must equal window_size — required by skforecast."""
+    ref = datetime(2025, 6, 1, 0, 0, tzinfo=timezone.utc)
+    ref_naive = pd.Timestamp(ref).tz_convert(None).floor("15min")
+
+    past_times = [ref_naive - pd.Timedelta(minutes=15 * (19 - i)) for i in range(20)]
+    future_times = pd.date_range(ref_naive, periods=3, freq="15min")
+
+    df = pd.concat(
+        [
+            pd.DataFrame(
+                {"Timestamp": past_times, "price": np.ones(20) * 100.0, "f1": np.ones(20)}
+            ),
+            pd.DataFrame({"Timestamp": future_times, "price": [np.nan] * 3, "f1": np.ones(3)}),
+        ],
+        ignore_index=True,
+    )
+
+    window_size = 8
+    _, exog, _ = li._extract_lgbm_inputs(
+        df, feature_cols=["f1"], window_size=window_size, forecast_steps=3, reference_time=ref
+    )
+
+    assert int(exog.index[0]) == window_size
+
+
+# ---------------------------------------------------------------------------
+# live_data_pipeline — _chunked_fetch
+# ---------------------------------------------------------------------------
+
+
+def test_chunked_fetch_makes_multiple_calls_for_wide_window():
+    calls = []
+
+    def fake_fetch(start, end):
+        calls.append((start, end))
+        return pd.DataFrame({"ts_utc": [start], "value": [1.0]})
+
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = start + timedelta(hours=400)  # > 168 h limit
+
+    result = ldp._chunked_fetch(fake_fetch, start, end, max_hours=168)
+
+    assert len(calls) > 1
+    assert isinstance(result, pd.DataFrame)
+    assert len(result) > 0
+
+
+def test_chunked_fetch_single_call_within_limit():
+    calls = []
+
+    def fake_fetch(start, end):
+        calls.append((start, end))
+        return pd.DataFrame({"ts_utc": [start], "value": [1.0]})
+
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = start + timedelta(hours=48)  # < 168 h
+
+    ldp._chunked_fetch(fake_fetch, start, end, max_hours=168)
+
+    assert len(calls) == 1
+
+
+def test_chunked_fetch_deduplicates_on_ts_utc():
+    ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    def fake_fetch(start, end):
+        return pd.DataFrame({"ts_utc": [ts], "value": [1.0]})
+
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = start + timedelta(hours=400)
+
+    result = ldp._chunked_fetch(fake_fetch, start, end, max_hours=168)
+
+    # Multiple chunks returned the same ts_utc; dedup should leave one row
+    assert result["ts_utc"].nunique() == 1
+
+
+# ---------------------------------------------------------------------------
+# live_data_pipeline — build_live_lgbm_dataset
+# ---------------------------------------------------------------------------
+
+
+def test_build_live_lgbm_dataset_returns_dataframe(monkeypatch):
+    def fake_weather(**k):
+        return _make_hourly_df(200), _make_daily_df(10)
+
+    def fake_price(**k):
+        return _make_price_df(200)
+
+    def fake_preprocess(price_df, weather_df, daily_df, drop_missing_price=True):
+        return pd.DataFrame(
+            {"Timestamp": pd.date_range("2025-01-01", periods=5, freq="15min"), "price": np.ones(5)}
+        )
+
+    monkeypatch.setattr(ldp, "_fetch_live_weather", fake_weather)
+    monkeypatch.setattr(ldp, "_fetch_live_price", fake_price)
+    monkeypatch.setattr(ldp, "preprocess_raw_data", fake_preprocess)
+
+    result = ldp.build_live_lgbm_dataset(forecast_steps=4)
+
+    assert isinstance(result, pd.DataFrame)
+    assert "Timestamp" in result.columns
+
+
+def test_build_live_lgbm_dataset_raises_on_empty_price(monkeypatch):
+    def fake_weather(**k):
+        return _make_hourly_df(200), _make_daily_df(10)
+
+    def fake_price(**k):
+        return pd.DataFrame(columns=["timestamp", "price"])
+
+    monkeypatch.setattr(ldp, "_fetch_live_weather", fake_weather)
+    monkeypatch.setattr(ldp, "_fetch_live_price", fake_price)
+
+    with pytest.raises(ValueError, match="Price API returned no data"):
+        ldp.build_live_lgbm_dataset(forecast_steps=4)
+
+
+def test_build_live_lgbm_dataset_sorted_by_timestamp(monkeypatch):
+    def fake_weather(**k):
+        return _make_hourly_df(200), _make_daily_df(10)
+
+    def fake_price(**k):
+        return _make_price_df(200)
+
+    unsorted_times = pd.date_range("2025-01-01", periods=5, freq="15min")[::-1]
+
+    def fake_preprocess(price_df, weather_df, daily_df, drop_missing_price=True):
+        return pd.DataFrame({"Timestamp": unsorted_times, "price": np.ones(5)})
+
+    monkeypatch.setattr(ldp, "_fetch_live_weather", fake_weather)
+    monkeypatch.setattr(ldp, "_fetch_live_price", fake_price)
+    monkeypatch.setattr(ldp, "preprocess_raw_data", fake_preprocess)
+
+    result = ldp.build_live_lgbm_dataset(forecast_steps=4)
+
+    ts = pd.to_datetime(result["Timestamp"])
+    assert ts.is_monotonic_increasing
+
+
+def test_build_live_lgbm_dataset_passes_reference_time(monkeypatch):
+    ref = datetime(2025, 6, 15, 12, 0, tzinfo=timezone.utc)
+    captured: dict = {}
+
+    def fake_weather(**k):
+        captured["weather_ref"] = k.get("reference_time")
+        return _make_hourly_df(200), _make_daily_df(10)
+
+    def fake_price(**k):
+        captured["price_ref"] = k.get("reference_time")
+        return _make_price_df(200)
+
+    def fake_preprocess(price_df, weather_df, daily_df, drop_missing_price=True):
+        return pd.DataFrame(
+            {"Timestamp": pd.date_range("2025-01-01", periods=3, freq="15min"), "price": np.ones(3)}
+        )
+
+    monkeypatch.setattr(ldp, "_fetch_live_weather", fake_weather)
+    monkeypatch.setattr(ldp, "_fetch_live_price", fake_price)
+    monkeypatch.setattr(ldp, "preprocess_raw_data", fake_preprocess)
+
+    ldp.build_live_lgbm_dataset(forecast_steps=4, reference_time=ref)
 
     assert captured["weather_ref"] == ref
     assert captured["price_ref"] == ref

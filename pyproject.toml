@@ -23,7 +23,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "pandas>=3.0.0",
+    "pandas",
     "numpy>=2.0.0",
     "pyomo>=6.5.0",
     "pydantic>=2.0.0",
@@ -34,6 +34,8 @@ dependencies = [
     "highspy>=1.5.0",
     "scikit-learn>=1.3.0",
     "xgboost>=2.0.0",
+    "lightgbm>=4.0.0",
+    "skforecast==0.20.1",
     "matplotlib>=3.7.0",
     "holidays>=0.11.2",
 ]
@@ -159,6 +161,7 @@ select = [
 ]
 ignore = [
     "E501",   # line too long (handled by black)
+    "E402",   # module level import not at top of file (needed for sys.path modifications)
     "B008",   # do not perform function calls in argument defaults
     # --- docstring style choices ---
     "D203",   # conflicts with D211 (no blank line before class docstring); use D211
@@ -224,6 +227,9 @@ module = [
     "sklearn.*",
     "scipy.*",
     "xgboost.*",
+    "lightgbm.*",
+    "skforecast.*",
+    "joblib.*",
     "matplotlib.*",
     "openmeteo_requests.*",
     "requests.*",
@@ -239,3 +245,4 @@ ignore_missing_imports = true
 # Pyomo configuration placeholder
 solver_manager = "neos"  # Can be changed to local, neos, etc.
 default_solver = "glpk"  # Default solver for optimization
+

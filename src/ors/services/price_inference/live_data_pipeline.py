@@ -9,9 +9,11 @@ feature-compatible with the trained model.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
+import numpy as np
 import pandas as pd
 
 from ors.clients.weather_client import (
@@ -31,6 +33,7 @@ from ors.etl.etl import (
     transform_time_data,
     transform_weather_data,
 )
+from ors.services.prediction.data_pipeline import preprocess_raw_data
 from ors.services.price_api.price_api import (
     fetch_inddem_demand,
     fetch_indo_initial_demand,
@@ -44,8 +47,60 @@ from ors.services.price_api.price_api import (
 BMRS_BASE_URL: str = "https://data.elexon.co.uk/bmrs/api/v1"
 DEFAULT_DATA_PROVIDERS: list[str] = []
 
-# Must be >= the largest lag step used during training
+# Must be >= the largest lag step used during training (XGBoost path)
 PRICE_LOOKBACK_HOURS: int = 48
+
+# Must cover the full window_size of the LGBM ForecasterRecursive (max_lag=672
+# steps × 15 min = 168 hours).  Add a small buffer to survive minor API gaps.
+LGBM_PRICE_LOOKBACK_HOURS: int = 170
+
+# BMRS MID dataset enforces a strict 7-day (168-hour) From→To window.
+_MID_MAX_WINDOW_HOURS: int = 168
+
+# Helpers
+
+
+def _chunked_fetch(
+    fetch_fn: Callable[[datetime, datetime], pd.DataFrame],
+    start_utc: datetime,
+    end_utc: datetime,
+    max_hours: int = _MID_MAX_WINDOW_HOURS,
+) -> pd.DataFrame:
+    """Call fetch_fn in ≤max_hours windows and return concatenated, deduplicated results.
+
+    Some BMRS endpoints (e.g. MID) reject requests whose From→To span exceeds
+    7 days.  This helper transparently slices a wider window into compliant
+    chunks and stitches the results together.
+
+    Args:
+        fetch_fn: Callable ``(start_utc, end_utc) -> pd.DataFrame``.
+        start_utc: Start of the full desired window (UTC-aware).
+        end_utc: End of the full desired window (UTC-aware).
+        max_hours: Maximum window size per individual API call (default 168 h).
+
+    Returns:
+        Concatenated DataFrame, deduplicated on ``ts_utc`` (last value wins).
+    """
+    frames: list[pd.DataFrame] = []
+    delta = timedelta(hours=max_hours)
+    chunk_start = start_utc
+    while chunk_start < end_utc:
+        chunk_end = min(chunk_start + delta, end_utc)
+        df = fetch_fn(chunk_start, chunk_end)
+        if not df.empty:
+            frames.append(df)
+        chunk_start = chunk_end
+    if not frames:
+        return fetch_fn(start_utc, start_utc)
+    combined = pd.concat(frames, ignore_index=True)
+    if "ts_utc" in combined.columns:
+        combined = (
+            combined.drop_duplicates(subset=["ts_utc"], keep="last")
+            .sort_values("ts_utc")
+            .reset_index(drop=True)
+        )
+    return combined
+
 
 # Fetch
 
@@ -106,10 +161,26 @@ def _fetch_live_price(
     now = reference_time if reference_time is not None else datetime.now(timezone.utc)
     start_utc = now - timedelta(hours=lookback_hours)
 
-    mid = fetch_mid_price(session, base_url, start_utc, now, data_providers, timeout)
-    itsdo = fetch_itsdo_demand(session, base_url, start_utc, now, timeout=timeout)
-    indo = fetch_indo_initial_demand(session, base_url, start_utc, now, timeout=timeout)
-    inddem = fetch_inddem_demand(session, base_url, start_utc, now, timeout=timeout)
+    mid = _chunked_fetch(
+        lambda s, e: fetch_mid_price(session, base_url, s, e, data_providers, timeout),
+        start_utc,
+        now,
+    )
+    itsdo = _chunked_fetch(
+        lambda s, e: fetch_itsdo_demand(session, base_url, s, e, timeout=timeout),
+        start_utc,
+        now,
+    )
+    indo = _chunked_fetch(
+        lambda s, e: fetch_indo_initial_demand(session, base_url, s, e, timeout=timeout),
+        start_utc,
+        now,
+    )
+    inddem = _chunked_fetch(
+        lambda s, e: fetch_inddem_demand(session, base_url, s, e, timeout=timeout),
+        start_utc,
+        now,
+    )
 
     merged: pd.DataFrame | None = None
     for frame in [mid, itsdo, indo, inddem]:
@@ -231,3 +302,102 @@ def build_live_merged_dataset(
     merged = add_lagged_features(merged, lag_steps=lag_steps, drop_na=False)
 
     return merged.sort_values("Timestamp").reset_index(drop=True)
+
+
+def build_live_lgbm_dataset(
+    forecast_steps: int = 96,
+    past_hours: int = LGBM_PRICE_LOOKBACK_HOURS,
+    base_url: str = BMRS_BASE_URL,
+    data_providers: list[str] = DEFAULT_DATA_PROVIDERS,
+    timeout: int = 60,
+    reference_time: datetime | None = None,
+) -> pd.DataFrame:
+    """Fetch and preprocess live data for LGBM ForecasterRecursive inference.
+
+    Applies the exact same preprocessing pipeline as the training
+    :func:`~ors.services.prediction.data_pipeline.build_merged_dataset` so
+    that the resulting feature columns (returned by
+    :func:`~ors.services.prediction.data_pipeline.get_feature_cols`) are
+    compatible with a fitted ``ForecasterRecursive``.
+
+    The returned DataFrame covers:
+
+    * **Past** (``past_hours`` rows at 15-min resolution): rows where ``price``
+      is a real value — used to extract the ``last_window`` for the forecaster.
+    * **Future** (``forecast_steps`` rows at 15-min resolution): rows where
+      ``price`` is ``NaN`` — used as ``exog`` for
+      ``model.predict(steps, last_window, exog)``.
+
+    Args:
+        forecast_steps: Number of 15-min steps to include in the future exog
+            window (default 96 = 24 h).
+        past_hours: Hours of price/weather history to fetch.  Must be >= the
+            model's ``window_size`` (168 h for the default LGBM config).
+        base_url: BMRS API base URL.
+        data_providers: MID data-provider filter list (empty = no filter).
+        timeout: HTTP timeout in seconds.
+        reference_time: UTC datetime to treat as "now".  If ``None``, runs live.
+
+    Returns:
+        Merged, preprocessed DataFrame sorted by Timestamp.  Past rows have a
+        valid ``price`` column; future rows have ``price = NaN``.  All exog
+        feature columns are populated for both past and future rows.
+
+    Raises:
+        ValueError: If the weather API returns no usable data.
+    """
+    now = reference_time if reference_time is not None else datetime.now(timezone.utc)
+    now_naive = (
+        pd.Timestamp(now).tz_convert(None)
+        if pd.Timestamp(now).tzinfo is not None
+        else pd.Timestamp(now)
+    )
+
+    # Forecast window: enough days to cover forecast_steps × 15 min ahead,
+    # rounded up to whole days with one extra day of buffer.
+    forecast_days = max(3, (forecast_steps // (24 * 4)) + 2)
+
+    # 1. Fetch live weather (past + forecast)
+    print("Fetching live weather data (LGBM pipeline) ...")
+    hourly_df, daily_df = _fetch_live_weather(
+        past_hours=past_hours,
+        forecast_days=forecast_days,
+        reference_time=reference_time,
+    )
+
+    # 2. Fetch live price data (past only; future rows will have NaN price)
+    print("Fetching live price/demand data ...")
+    price_df = _fetch_live_price(
+        base_url=base_url,
+        data_providers=data_providers,
+        lookback_hours=past_hours,
+        timeout=timeout,
+        reference_time=reference_time,
+    )
+
+    if price_df.empty:
+        raise ValueError("Price API returned no data — cannot build LGBM inference dataset.")
+
+    # 3. Extend price_df with a single sentinel row at the end of the forecast
+    #    window so that preprocess_raw_data builds a full_index that covers
+    #    the future exog horizon.
+    future_end = now_naive.ceil("15min") + pd.Timedelta(minutes=15 * forecast_steps)
+    sentinel = pd.DataFrame({"timestamp": [future_end], "price": [np.nan]})
+    for col in price_df.columns:
+        if col not in sentinel.columns:
+            sentinel[col] = np.nan
+    price_df_extended = pd.concat([price_df, sentinel], ignore_index=True)
+
+    # 4. Run the notebook-aligned preprocessing (drop_missing_price=False so
+    #    future rows with NaN price are retained in the output).
+    print(
+        f"Live LGBM pipeline window: {now_naive - pd.Timedelta(hours=past_hours)}  ->  {future_end}"
+    )
+    df = preprocess_raw_data(
+        price_df_extended,
+        hourly_df,
+        daily_df,
+        drop_missing_price=False,
+    )
+
+    return df.sort_values("Timestamp").reset_index(drop=True)

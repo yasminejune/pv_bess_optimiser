@@ -12,9 +12,10 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from .data_pipeline import build_merged_dataset
+from .data_pipeline import build_merged_dataset, get_feature_cols
 
 if TYPE_CHECKING:
+    from skforecast.recursive import ForecasterRecursive
     from xgboost import XGBRegressor
 
 
@@ -22,14 +23,14 @@ def resolve_target_column(df: pd.DataFrame, target_col: str) -> str:
     """Return the name of the target column present in *df*, trying fallbacks if needed.
 
     Args:
-        df: DataFrame to search for the target column.
-        target_col: Preferred target column name.
+        df (pd.DataFrame): DataFrame to search for the target column
+        target_col (str): Preferred target column name
 
     Returns:
-        The first matching column name found in *df*.
+        str: The first matching column name found in *df*
 
     Raises:
-        ValueError: If neither *target_col* nor any fallback candidate is in *df*.
+        ValueError: If neither *target_col* nor any fallback candidate is in *df*
 
     """
     if target_col in df.columns:
@@ -47,12 +48,12 @@ def prepare_features(df: pd.DataFrame, target_col: str = "Price") -> tuple[pd.Da
     to integers; fills remaining ``NaN`` values with column medians.
 
     Args:
-        df: Merged DataFrame containing features and a target column.
-        target_col: Name of the column to use as the prediction target.
+        df (pd.DataFrame): Merged DataFrame containing features and a target column
+        target_col (str): Name of the column to use as the prediction target
 
     Returns:
-        Tuple of ``(features, target)`` where *features* is a numeric DataFrame
-        and *target* is a float Series.
+        tuple[pd.DataFrame, pd.Series]: Tuple of ``(features, target)`` where *features* is a numeric DataFrame
+            and *target* is a float Series
 
     """
     resolved_target = resolve_target_column(df, target_col)
@@ -119,15 +120,15 @@ def time_based_split(
     """Split features and target into chronological train/test sets.
 
     Args:
-        features: Feature DataFrame ordered by time.
-        target: Corresponding target Series.
-        test_size: Proportion of data to assign to the test set (between 0 and 1).
+        features (pd.DataFrame): Feature DataFrame ordered by time
+        target (pd.Series): Corresponding target Series
+        test_size (float): Proportion of data to assign to the test set (between 0 and 1)
 
     Returns:
-        Tuple of ``(x_train, x_test, y_train, y_test)``.
+        tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]: Tuple of ``(x_train, x_test, y_train, y_test)``
 
     Raises:
-        ValueError: If *test_size* is not strictly between 0 and 1.
+        ValueError: If *test_size* is not strictly between 0 and 1
 
     """
     if not 0.0 < test_size < 1.0:
@@ -149,13 +150,13 @@ def train_xgb_regressor(
     """Train an XGBoost regressor with sensible defaults and optional overrides.
 
     Args:
-        x_train: Training feature DataFrame.
-        y_train: Training target Series.
-        random_state: Random seed for reproducibility.
-        params: Optional dictionary of hyperparameters to override the defaults.
+        x_train (pd.DataFrame): Training feature DataFrame
+        y_train (pd.Series): Training target Series
+        random_state (int): Random seed for reproducibility
+        params (dict[str, Any] | None): Optional dictionary of hyperparameters to override the defaults
 
     Returns:
-        Fitted :class:`xgboost.XGBRegressor` instance.
+        XGBRegressor: Fitted :class:`xgboost.XGBRegressor` instance
 
     """
     from xgboost import XGBRegressor
@@ -301,25 +302,221 @@ def predict_prices(model: XGBRegressor, df: pd.DataFrame, target_col: str = "Pri
     return cast(np.ndarray, model.predict(features))
 
 
+def _build_lgbm_recursive(n_estimators: int = 850) -> ForecasterRecursive:
+    """Build a LightGBM ForecasterRecursive with notebook-aligned hyperparameters.
+
+    Args:
+        n_estimators: Number of boosting rounds.
+
+    Returns:
+        Configured but unfitted :class:`skforecast.recursive.ForecasterRecursive`.
+
+    """
+    from lightgbm import LGBMRegressor
+    from skforecast.preprocessing import RollingFeatures
+    from skforecast.recursive import ForecasterRecursive
+
+    regressor = LGBMRegressor(
+        objective="mae",
+        n_estimators=n_estimators,
+        learning_rate=0.025,
+        num_leaves=127,
+        max_depth=11,
+        min_child_samples=20,
+        min_split_gain=0.0,
+        subsample=0.95,
+        colsample_bytree=0.95,
+        reg_alpha=0.1,
+        reg_lambda=0.8,
+        max_bin=511,
+        random_state=42,
+        n_jobs=-1,
+    )
+
+    rolling_windows = [4, 16, 32, 96, 192, 288, 384, 576]
+    rolling_stats = ["mean", "std", "min", "max"]
+    rf_stats = [stat for win in rolling_windows for stat in rolling_stats]
+    rf_windows = [win for win in rolling_windows for _ in rolling_stats]
+    window_features = RollingFeatures(stats=rf_stats, window_sizes=rf_windows)
+
+    recursive_lags = list(range(1, 49)) + [64, 96, 128, 192, 288, 384, 480, 576, 672]
+    return ForecasterRecursive(
+        regressor=regressor,
+        lags=recursive_lags,
+        window_features=window_features,
+    )
+
+
+def _train_and_save_lgbm(
+    project_root: Path,
+    df: pd.DataFrame,
+    model_name: str = "lgbm_recursive",
+) -> Path:
+    """Train a LightGBM ForecasterRecursive and save all artifacts.
+
+    Replicates the notebook training exactly:
+    - 180-day rolling training window
+    - Fixed val/test splits of 21 days each
+    - Saves model + metadata via joblib; also writes report-compatible CSV/JSON
+
+    Args:
+        project_root: Absolute path to the project root directory.
+        df: Preprocessed DataFrame from :func:`~data_pipeline.build_merged_dataset`.
+        model_name: Base name used when creating the run directory.
+
+    Returns:
+        Path to the run directory containing all saved artifacts.
+
+    """
+    import joblib
+
+    horizon = 96
+    val_steps = 21 * 24 * 4
+    test_steps = 21 * 24 * 4
+    train_lookback_days = 180
+    n_estimators = 850
+
+    feature_cols = get_feature_cols(df)
+    y_all = df["price"].astype(float).reset_index(drop=True)
+    exog_all = df[feature_cols].reset_index(drop=True)
+
+    max_idx = int(len(df) - 1)
+    train_cutoff = max_idx - (val_steps + test_steps)
+    val_start = train_cutoff + 1
+    test_start = val_start + val_steps
+
+    train_lookback_steps = train_lookback_days * 24 * 4
+    train_start_idx = max(0, train_cutoff - train_lookback_steps + 1)
+
+    train_y = y_all.iloc[train_start_idx : train_cutoff + 1]
+    train_exog = exog_all.iloc[train_start_idx : train_cutoff + 1]
+
+    print(f"Training LGBM recursive model (n_estimators={n_estimators}) …")
+    print(f"  window: rows {train_start_idx}–{train_cutoff} ({len(train_y):,} rows)")
+
+    model = _build_lgbm_recursive(n_estimators=n_estimators)
+    model.fit(y=train_y, exog=train_exog)
+
+    max_lag = int(getattr(model, "window_size", 672))
+
+    def _eval_segment(start_idx: int, seg_len: int) -> tuple[np.ndarray, np.ndarray]:
+        y_true_all: list[np.ndarray] = []
+        y_pred_all: list[np.ndarray] = []
+        end_excl = start_idx + seg_len
+        for origin in range(start_idx, end_excl, horizon):
+            if origin + horizon > end_excl:
+                break
+            if origin < max_lag:
+                continue
+            last_window = y_all.iloc[origin - max_lag : origin]
+            exog_future = exog_all.iloc[origin : origin + horizon]
+            pred = model.predict(
+                steps=horizon, last_window=last_window, exog=exog_future
+            ).to_numpy()
+            y_true_all.append(y_all.iloc[origin : origin + horizon].to_numpy())
+            y_pred_all.append(pred)
+        if not y_true_all:
+            return np.empty(0), np.empty(0)
+        return np.concatenate(y_true_all), np.concatenate(y_pred_all)
+
+    test_true, test_pred = _eval_segment(test_start, test_steps)
+
+    # Compute test metrics
+    if len(test_true) > 0:
+        mae_val = float(mean_absolute_error(test_true, test_pred))
+        rmse_val = float(np.sqrt(mean_squared_error(test_true, test_pred)))
+        mape_val = float(
+            np.mean(np.abs((test_true - test_pred) / np.clip(np.abs(test_true), 1e-6, None))) * 100
+        )
+    else:
+        mae_val = rmse_val = mape_val = float("nan")
+
+    met: dict[str, float] = {"mae": mae_val, "rmse": rmse_val, "mape": mape_val}
+
+    # Create run directory
+    run_dir = create_model_run_dir(project_root, model_name)
+
+    # Save model and metadata via joblib
+    model_path = run_dir / "model.joblib"
+    meta: dict = {
+        "model_name": model_name,
+        "run_timestamp": datetime.now().isoformat(timespec="seconds"),
+        "feature_cols": feature_cols,
+        "horizon": horizon,
+        "max_lag": max_lag,
+        "n_estimators": n_estimators,
+        "train_end_idx": train_cutoff,
+        "row_count": len(df),
+        "feature_count": len(feature_cols),
+    }
+    joblib.dump(model, model_path)
+    joblib.dump(meta, run_dir / "model_meta.joblib")
+
+    # Also write to the standard inference path used by the forecasting service
+    inference_dir = project_root / "models" / "price_prediction" / "lgbm_recursive_single_model"
+    inference_dir.mkdir(parents=True, exist_ok=True)
+    ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    joblib.dump(model, inference_dir / f"recursive_single_model_{ts_str}.joblib")
+    joblib.dump(meta, inference_dir / f"recursive_single_model_{ts_str}_meta.joblib")
+    print("Inference model saved to:", inference_dir)
+
+    # Save metrics JSON (report-compatible keys)
+    save_metrics(met, run_dir / "metrics.json")
+
+    # Save test predictions CSV
+    n_test = len(test_true)
+    test_timestamps = df.iloc[test_start : test_start + n_test]["Timestamp"]
+    preds_df = pd.DataFrame(
+        {
+            "Timestamp": test_timestamps.values,
+            "Price_true": test_true,
+            "Price_pred": test_pred,
+        }
+    )
+    preds_df.to_csv(run_dir / "predictions.csv", index=False)
+
+    # Save feature importance
+    importance_df = model.get_feature_importances()
+    importance_df.to_csv(run_dir / "feature_importance.csv", index=False)
+
+    # Save metadata JSON (scalar values only for report compatibility)
+    json_meta = {k: v for k, v in meta.items() if not isinstance(v, (list, dict))}
+    (run_dir / "metadata.json").write_text(json.dumps(json_meta, indent=2))
+
+    print("Model saved to:", model_path)
+    print("Metrics saved to:", run_dir / "metrics.json")
+    print("Predictions saved to:", run_dir / "predictions.csv")
+    print("Metrics:", met)
+
+    return run_dir
+
+
 def train_and_save_from_dataframe(
     project_root: Path,
     df: pd.DataFrame,
-    model_name: str = "xgboost",
+    model_name: str = "lgbm_recursive",
     test_size: float = 0.2,
 ) -> Path:
-    """Train an XGBoost model on *df* and persist all artifacts to a run directory.
+    """Train a model on *df* and persist all artifacts to a run directory.
+
+    When *model_name* contains ``"lgbm"`` (case-insensitive) the LightGBM
+    ForecasterRecursive path is used (notebook-aligned).  Otherwise the
+    legacy XGBoost path is used.
 
     Args:
         project_root: Absolute path to the project root directory.
         df: Merged DataFrame containing features, a ``Timestamp`` column, and a
-            ``Price`` target column.
+            target column (``price`` or ``Price``).
         model_name: Base name used when creating the run directory.
-        test_size: Fraction of data reserved for the test set.
+        test_size: Fraction of data reserved for the test set (XGBoost path only).
 
     Returns:
         Path to the run directory containing the saved model and artifacts.
 
     """
+    if "lgbm" in model_name.lower():
+        return _train_and_save_lgbm(project_root, df, model_name)
+
     features, target = prepare_features(df, target_col="Price")
     x_train, x_test, y_train, y_test = time_based_split(features, target, test_size=test_size)
 

@@ -271,6 +271,178 @@ For t ≥ N_day, the window covers exactly the most recent 96 periods (24 hours)
 
 ---
 
+---
+
+# 11) API Functions and Integration
+
+## Module: `integration.py` — Data Preparation and Integration
+
+The integration module provides helper functions for combining forecasted data sources and preparing inputs for the optimization engine.
+
+### Key Functions
+
+#### `create_input_df(config=None, *, client=None, start_datetime=None, end_datetime=None, model_path=LGBM_MODEL_DIR, **kwargs)`
+Generates a combined DataFrame of PV forecast and price prediction output suitable for optimization.
+
+**Purpose:** Creates a unified data source that combines:
+- PV power generation forecasts from weather APIs
+- Price prediction model outputs from trained ML models
+
+**Parameters:**
+- `config`: PVSiteConfig for solar generation forecasting (optional, defaults loaded if None)
+- `client`: HTTP client for API requests (optional)
+- `start_datetime`: Forecast start time (defaults to current time floored to 15-min boundary)  
+- `end_datetime`: Forecast end time (defaults to start + 1 day)
+- `model_path`: Path to trained LGBM price model directory
+- `**kwargs`: Additional parameters passed to underlying services
+
+**Returns:** 
+- `pd.DataFrame`: Unified dataset with columns:
+  - `timestamp_utc`: UTC timestamps at 15-minute intervals
+  - `generation_kw`: PV generation forecast (kW)  
+  - Price prediction columns from the ML model
+  - Additional forecasting metadata
+
+**Data Contract:**
+- PV DataFrame must contain `timestamp_utc` column
+- Price DataFrame must contain `Timestamp` column (capital T)
+- Automatic temporal alignment to 15-minute resolution
+- UTC timezone standardization across all timestamps
+
+**Integration Flow:**
+1. **Time Window Determination**: Establishes forecast period (default: now → +24 hours)
+2. **PV Generation**: Calls `generate_pv_power_for_date_range()` for solar forecasts
+3. **Price Prediction**: Executes `run_inference()` for price forecasts using trained LGBM models
+4. **Data Alignment**: Merges datasets on timestamp with consistent 15-minute intervals
+5. **Format Standardization**: Ensures column naming and data types meet optimizer requirements
+
+#### `floor_to_prev_15min_utc(dt)`
+Utility function that floors a datetime to the previous 15-minute boundary in UTC.
+
+**Purpose:** Ensures consistent time alignment for optimization periods.
+
+**Parameters:**
+- `dt`: Input datetime (naive datetimes assumed to be UTC)
+
+**Returns:** 
+- `datetime`: Floored to previous 15-minute boundary in UTC timezone
+
+### Integration Patterns
+
+#### Automatic Data Pipeline
+```python
+from ors.services.optimizer.integration import create_input_df
+
+# Default: now → +24h forecast with LGBM price model
+df_forecast = create_input_df()
+
+# Custom time window and PV site configuration  
+from ors.config.pv_config import get_pv_config, SiteType
+config = get_pv_config(SiteType.BURST_1)
+
+df_custom = create_input_df(
+    config=config,
+    start_datetime=datetime(2026, 3, 11, 10, 0, 0),
+    end_datetime=datetime(2026, 3, 12, 10, 0, 0)
+)
+```
+
+#### Live Optimization Workflow
+The integration module enables seamless live optimization:
+1. **Real-time Data**: Fetches latest weather and price predictions
+2. **Temporal Consistency**: Aligns all data to optimization time grid  
+3. **Format Preparation**: Converts forecasts to optimizer input format
+4. **Quality Validation**: Ensures data completeness and consistency
+
+#### Error Handling
+- **Missing Data**: Graceful handling of forecast unavailability
+- **Time Alignment**: Automatic resolution of timestamp inconsistencies
+- **API Failures**: Fallback mechanisms for external service outages
+- **Model Loading**: Validation of ML model availability and format
+
+### Build Model Integration
+
+#### `build_model(price, solar, p_30, cycles_used_today, t_boundary)`
+Main optimization model construction function that creates the mathematical model from prepared data.
+
+**Parameters:**
+- `price`: Dictionary of timestep prices from integrated data
+- `solar`: Dictionary of solar generation values from integrated data  
+- `p_30`: Terminal price for battery energy valuation
+- `cycles_used_today`: Current cycle count for constraint enforcement
+- `t_boundary`: Time boundary for cycle counting logic
+
+**Returns:**
+- `pyomo.Model`: Constructed optimization model ready for solving
+
+**Integration with Data Pipeline:**
+The `create_input_df()` output is processed through `load_inputs()` which extracts the required dictionaries and parameters for `build_model()`, ensuring seamless data flow from forecasting to optimization.
+
+---
+
+# 12) Running the Optimizer
+
+## Full pipeline (live LGBM inference + HiGHS solver)
+
+Run from the repo root:
+
+```bash
+python -m ors.services.optimizer.optimizer
+```
+
+This executes the following chain automatically:
+
+```
+load_inputs()
+  └─ create_input_df()               ← live LGBM inference + PV forecast
+       ├─ run_inference(LGBM)        ← 96-step price prediction
+       └─ generate_pv_power(...)     ← PV forecast
+└─ build_model(price, solar, p_30, cycles_used_today, t_boundary)
+└─ solver.solve(m)                   ← HiGHS (preferred) / GLPK / CBC
+```
+
+The prediction model runs **once**.  `load_inputs` returns the merged
+`DataFrame` alongside the model inputs so that the output CSV can be written
+without a second inference call.
+
+Output is written to:
+`tests/data/optimizer/bess_solution_v2_15min_1day.csv`
+
+## Prerequisites
+
+```bash
+# 1. Install a solver (HiGHS is preferred)
+pip install highspy
+
+# 2. Train the LGBM price model (only needed once, or after retraining)
+python -m ors.services.prediction.train_script --model-name lgbm_recursive
+```
+
+The trained model is written to:
+`models/price_prediction/lgbm_recursive_single_model/`
+
+## Programmatic usage
+
+```python
+from ors.services.optimizer.optimizer import load_inputs, build_model
+from pyomo.environ import SolverFactory
+
+price, solar, p_30, cycles_used_today, t_boundary, df = load_inputs(
+    input_csv="tests/data/optimizer/bess_test_data_intraday_15min.csv",
+    historic_csv="tests/data/prediction/price_data.csv",
+    output_csv="tests/data/optimizer/bess_solution_v2_15min_1day.csv",
+)
+
+m = build_model(price, solar, p_30, cycles_used_today, t_boundary)
+solver = SolverFactory("highs")
+solver.solve(m, tee=True)
+```
+
+The `historic_csv` must contain at least 30 days of price data (columns:
+`timestamp`, `price`) to compute `p_30`.
+
+---
+
 ## Platform prerequisites and installation notes
 
 This project is intended to run on Windows, macOS, and Linux. A few external/tooling prerequisites are platform-specific — follow the steps below for a smooth install.

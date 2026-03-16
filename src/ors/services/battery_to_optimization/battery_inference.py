@@ -28,10 +28,10 @@ def load_optimizer_battery_config(
     """Load battery configuration for optimizer.
 
     Args:
-        config_path: Optional path to config file. If None, uses default location.
+        config_path (str | None): Optional path to config file. If None, uses default location.
 
     Returns:
-        Tuple of (BatteryParams, simulation_defaults)
+        tuple[BatteryParams, dict[str, Any]]: Tuple of (BatteryParams, simulation_defaults)
     """
     if config_path is None:
         config_path = str(Path(__file__).parent.parent / "battery" / "battery_config.json")
@@ -44,6 +44,8 @@ def create_optimizer_log_entries(
     params: BatteryParams,
     dt_hours: float = 0.25,
     start_datetime: datetime | None = None,
+    initial_energy_mwh: float | None = None,
+    verbose: bool = False,
 ) -> list[dict[str, Any]]:
     """Create detailed log entries from optimizer results with step-by-step battery physics.
 
@@ -51,27 +53,31 @@ def create_optimizer_log_entries(
     battery demo, with complete loss breakdown and energy accounting.
 
     Args:
-        df_results: DataFrame with optimizer results containing columns:
-            - timestamp, price_intraday, solar_MW, P_grid_MW, P_dis_MW,
-            - P_sol_bat_MW, P_sol_sell_MW, E_MWh
-        params: Battery parameters
-        dt_hours: Time step duration in hours
-        start_datetime: Optional start time for timestamping
+        df_results (pd.DataFrame): DataFrame with optimizer results containing columns:
+            timestamp, price_intraday, solar_MW, P_grid_MW, P_dis_MW,
+            P_sol_bat_MW, P_sol_sell_MW, E_MWh
+        params (BatteryParams): Battery parameters
+        dt_hours (float): Time step duration in hours
+        start_datetime (datetime | None): Optional start time for timestamping
+        initial_energy_mwh (float | None): Initial battery energy state for step 0. If None, uses 50% SOC.
+        verbose (bool): Enable verbose step-by-step output
 
     Returns:
-        List of detailed log entries compatible with battery module CSV export
+        list[dict[str, Any]]: List of detailed log entries compatible with battery module CSV export
     """
     logs = []
 
-    print(f"📝 Creating detailed step-by-step battery logs for {len(df_results)} timesteps...")
-
-    # Debug: Check the dataframe structure
-    print(f"   DataFrame shape: {df_results.shape}")
-    print(f"   DataFrame columns: {list(df_results.columns)}")
+    if verbose:
+        print(f"Info: Creating detailed step-by-step battery logs for {len(df_results)} timesteps...")
+        print(f"Info: DataFrame shape: {df_results.shape}")
+        print(f"Info: DataFrame columns: {list(df_results.columns)}")
+    else:
+        print(f"Info: Processing {len(df_results)} timesteps...")
 
     try:
         for step, row in df_results.iterrows():
-            print(f"   Processing step {step}...")
+            if verbose:
+                print(f"Info: Processing step {step}...")
 
             # Extract power values from optimizer results
             p_grid_mw = float(row["P_grid_MW"])
@@ -80,15 +86,19 @@ def create_optimizer_log_entries(
 
             # Energy states
             if step == 0:
-                e_prev_mwh = params.e_cap_mwh * 0.5  # Assuming 50% initial SOC
+                # Use provided initial energy or default to 50% SOC
+                e_prev_mwh = (
+                    initial_energy_mwh if initial_energy_mwh is not None else params.e_cap_mwh * 0.5
+                )
             else:
                 e_prev_mwh = float(df_results.iloc[step - 1]["E_MWh"])
             e_next_mwh = float(row["E_MWh"])
 
-            print(
-                f"     Powers: Grid={p_grid_mw:.2f}, Solar={p_solar_mw:.2f}, Discharge={p_dis_mw:.2f}"
-            )
-            print(f"     Energy: {e_prev_mwh:.2f} -> {e_next_mwh:.2f} MWh")
+            if verbose:
+                print(
+                    f"Info: Powers: Grid={p_grid_mw:.2f}, Solar={p_solar_mw:.2f}, Discharge={p_dis_mw:.2f}"
+                )
+                print(f"Info: Energy: {e_prev_mwh:.2f} -> {e_next_mwh:.2f} MWh")
 
             # Calculate losses for this step using battery physics
             losses = compute_losses(
@@ -110,7 +120,8 @@ def create_optimizer_log_entries(
                 timestamp_iso = pd.to_datetime(row["timestamp"]).isoformat()
 
             # Create standardized log entry using battery management function
-            print("     Creating log entry...")
+            if verbose:
+                print("Info: Creating log entry...")
             log_entry = create_log_entry(
                 step=step,
                 t_hours=t_hours,
@@ -129,7 +140,9 @@ def create_optimizer_log_entries(
             # The log_entry already contains all required battery module fields
 
             logs.append(log_entry)
-            print(f"     ✓ Step {step} logged")
+            
+            if verbose:
+                print(f"Success: Step {step} logged")
 
             # Print step progress every 24 steps (6 hours at 15-min intervals)
             if (step + 1) % 24 == 0 or step == 0 or step == len(df_results) - 1:
@@ -145,16 +158,17 @@ def create_optimizer_log_entries(
                 elif row.get("z_dis", 0) > 0.5:
                     battery_mode = "Battery→Grid"
 
-                print(
-                    f"  Step {step + 1:3d} ({hour:02d}:{minute:02d}): {battery_mode:12s} | "
-                    f"E={e_next_mwh:6.1f}MWh | Loss={losses.total_loss_mwh:.3f}MWh"
-                )
+                if verbose:
+                    print(
+                        f"Info: Step {step + 1:3d} ({hour:02d}:{minute:02d}): {battery_mode:12s} | "
+                        f"E={e_next_mwh:6.1f} MWh | Loss={losses.total_loss_mwh:.3f} MWh"
+                    )
 
-        print(f"✓ Created {len(logs)} detailed step logs")
+        print(f"Success: Created {len(logs)} detailed step logs")
         return logs
 
     except Exception as e:
-        print(f"❌ Error creating logs: {e}")
+        print(f"Error: Error creating logs: {e}")
         import traceback
 
         traceback.print_exc()
@@ -168,22 +182,28 @@ def export_optimizer_results(
     dt_hours: float = 0.25,
     start_datetime: datetime | None = None,
     config_path: str | None = None,
+    initial_energy_mwh: float | None = None,
 ) -> None:
     """Export optimizer results using battery module CSV format.
 
     Args:
-        df_results: DataFrame with optimizer results
-        csv_path: Path where CSV should be written
-        params: Battery parameters (loaded from config if None)
-        dt_hours: Time step duration in hours
-        start_datetime: Optional start time for timestamping
-        config_path: Optional path to battery config file
+        df_results (pd.DataFrame): DataFrame with optimizer results
+        csv_path (str): Path where CSV should be written
+        params (BatteryParams | None): Battery parameters (loaded from config if None)
+        dt_hours (float): Time step duration in hours
+        start_datetime (datetime | None): Optional start time for timestamping
+        config_path (str | None): Optional path to battery config file
+        initial_energy_mwh (float | None): Initial battery energy state. If None, uses 50% SOC.
     """
     if params is None:
         params, _ = load_optimizer_battery_config(config_path)
 
     logs = create_optimizer_log_entries(
-        df_results=df_results, params=params, dt_hours=dt_hours, start_datetime=start_datetime
+        df_results=df_results,
+        params=params,
+        dt_hours=dt_hours,
+        start_datetime=start_datetime,
+        initial_energy_mwh=initial_energy_mwh,
     )
 
     write_simulation_csv(logs, csv_path)
@@ -195,13 +215,13 @@ def validate_optimizer_energy_balance(
     """Validate that optimizer energy states are consistent with battery physics.
 
     Args:
-        df_results: DataFrame with optimizer results
-        params: Battery parameters
-        dt_hours: Time step duration in hours
-        tolerance: Numerical tolerance for validation
+        df_results (pd.DataFrame): DataFrame with optimizer results
+        params (BatteryParams): Battery parameters
+        dt_hours (float): Time step duration in hours
+        tolerance (float): Numerical tolerance for validation
 
     Returns:
-        Dictionary with validation results including errors and summary
+        dict[str, Any]: Dictionary with validation results including errors and summary
     """
     validation_results: dict[str, Any] = {
         "is_valid": True,
@@ -277,6 +297,8 @@ def create_enhanced_optimizer_output(
     start_datetime: datetime | None = None,
     validate: bool = True,
     config_path: str | None = None,
+    initial_energy_mwh: float | None = None,
+    verbose: bool = False,
 ) -> dict[str, Any]:
     """Create enhanced optimizer output with validation and detailed logging.
 
@@ -284,65 +306,75 @@ def create_enhanced_optimizer_output(
     with step-by-step recording similar to the battery demo.
 
     Args:
-        df_results: DataFrame with optimizer results
-        csv_path: Path where enhanced CSV should be written
-        params: Battery parameters (loaded from config if None)
-        dt_hours: Time step duration in hours
-        start_datetime: Optional start time for timestamping
-        validate: Whether to validate energy balance
-        config_path: Optional path to battery config file
+        df_results (pd.DataFrame): DataFrame with optimizer results
+        csv_path (str): Path where enhanced CSV should be written
+        params (BatteryParams | None): Battery parameters (loaded from config if None)
+        dt_hours (float): Time step duration in hours
+        start_datetime (datetime | None): Optional start time for timestamping
+        validate (bool): Whether to validate energy balance
+        config_path (str | None): Optional path to battery config file
+        initial_energy_mwh (float | None): Initial battery energy state. If None, uses 50% SOC.
+        verbose (bool): Enable verbose step-by-step output
 
     Returns:
-        Dictionary with processing results and validation info
+        dict[str, Any]: Dictionary with processing results and validation info
     """
     if params is None:
         params, _ = load_optimizer_battery_config(config_path)
 
-    print("🔋 Creating enhanced battery output with step-by-step logging...")
-    print(f"   Battery: {params.p_rated_mw}MW / {params.e_cap_mwh}MWh")
-    print(f"   Time step: {dt_hours} hours ({dt_hours*60} minutes)")
-    print(f"   Output path: {csv_path}")
+    print("Info: Creating enhanced battery output with step-by-step logging...")
+    if verbose:
+        print(f"Info: Battery: {params.p_rated_mw} MW / {params.e_cap_mwh} MWh")
+        print(f"Info: Time step: {dt_hours} hours ({dt_hours*60} minutes)")
+        print(f"Info: Output path: {csv_path}")
 
     # Create detailed logs with step-by-step processing
     logs = create_optimizer_log_entries(
-        df_results=df_results, params=params, dt_hours=dt_hours, start_datetime=start_datetime
+        df_results=df_results,
+        params=params,
+        dt_hours=dt_hours,
+        start_datetime=start_datetime,
+        initial_energy_mwh=initial_energy_mwh,
+        verbose=verbose,
     )
 
-    print(f"📏 Created {len(logs)} log entries")
+    print(f"Info: Created {len(logs)} log entries")
 
     if not logs:
-        print("❌ No logs created! Cannot write to CSV.")
+        print("Error: No logs created! Cannot write to CSV.")
         return {"csv_path": csv_path, "num_steps": 0, "error": "No logs created"}
 
     # Debug: Show first log entry
-    print(f"📋 First log entry keys: {list(logs[0].keys())}")
-    print(f"📋 First log entry sample: {dict(list(logs[0].items())[:5])}")
+    if verbose:
+        print(f"Info: First log entry keys: {list(logs[0].keys())}")
+        print(f"Info: First log entry sample: {dict(list(logs[0].items())[:5])}")
 
     # Export to CSV using battery module function (standard battery format only)
-    print(f"📝 Writing detailed logs to {csv_path}...")
+    print(f"Info: Writing detailed logs to {csv_path}...")
     try:
         # Use the standard battery module CSV writer which only includes battery/energy fields
         write_simulation_csv(logs, csv_path)
-        print(f"✓ Successfully wrote {len(logs)} step records to CSV")
+        print(f"Success: Successfully wrote {len(logs)} step records to CSV")
 
         # Verify file was created and has content
         csv_file_path = Path(csv_path)
         if csv_file_path.exists():
-            file_size = csv_file_path.stat().st_size
-            print(f"✓ CSV file created: {file_size} bytes")
+            if verbose:
+                file_size = csv_file_path.stat().st_size
+                print(f"Info: CSV file created: {file_size} bytes")
 
-            # Read back a few lines to verify
-            with open(csv_path) as f:
-                lines = f.readlines()
-                print(f"✓ CSV has {len(lines)} lines (including header)")
-                if len(lines) > 1:
-                    print(f"  Header: {lines[0].strip()}")
-                    print(f"  First row: {lines[1].strip()}")
+                # Read back a few lines to verify
+                with open(csv_path) as f:
+                    lines = f.readlines()
+                    print(f"Info: CSV has {len(lines)} lines (including header)")
+                    if len(lines) > 1:
+                        print(f"Info: Header: {lines[0].strip()}")
+                        print(f"Info: First row: {lines[1].strip()}")
         else:
-            print(f"❌ CSV file was not created at {csv_path}")
+            print(f"Error: CSV file was not created at {csv_path}")
 
     except Exception as e:
-        print(f"❌ Error writing CSV: {e}")
+        print(f"Error: Error writing CSV: {e}")
         import traceback
 
         traceback.print_exc()
@@ -369,17 +401,17 @@ def create_enhanced_optimizer_output(
 
     # Validate if requested
     if validate:
-        print("🔍 Validating energy balance...")
+        print("Info: Validating energy balance...")
         validation = validate_optimizer_energy_balance(
             df_results=df_results, params=params, dt_hours=dt_hours
         )
         results["validation"] = validation
 
         if validation["is_valid"]:
-            print("✓ Energy balance validation passed")
+            print("Success: Energy balance validation passed")
         else:
             print(
-                f"⚠ Energy balance validation failed: {validation['summary']['failed_steps']} errors"
+                f"Warning: Energy balance validation failed: {validation['summary']['failed_steps']} errors"
             )
 
     return results
@@ -393,6 +425,7 @@ def write_step_by_step_battery_log(
     dt_hours: float = 0.25,
     step_datetime: datetime | None = None,
     append_mode: bool = True,
+    initial_energy_mwh: float | None = None,
 ) -> dict[str, Any]:
     """Write a single optimization step to battery CSV log (for real-time logging).
 
@@ -400,16 +433,17 @@ def write_step_by_step_battery_log(
     similar to how the battery demo logs each simulation step.
 
     Args:
-        optimizer_step: Current optimization timestep (0-based)
-        row: Single row of optimizer results (pandas Series)
-        params: Battery parameters
-        csv_path: Path to CSV file
-        dt_hours: Time step duration in hours
-        step_datetime: Optional timestamp for this step
-        append_mode: If True, append to existing file; if False, create new file
+        optimizer_step (int): Current optimization timestep (0-based)
+        row (pd.Series): Single row of optimizer results (pandas Series)
+        params (BatteryParams): Battery parameters
+        csv_path (str): Path to CSV file
+        dt_hours (float): Time step duration in hours
+        step_datetime (datetime | None): Optional timestamp for this step
+        append_mode (bool): If True, append to existing file; if False, create new file
+        initial_energy_mwh (float | None): Initial battery energy state. If None, uses 50% SOC.
 
     Returns:
-        Dictionary with step log entry that was written
+        dict[str, Any]: Dictionary with step log entry that was written
     """
     # Extract power values from optimizer results
     p_grid_mw = row["P_grid_MW"]
@@ -418,7 +452,10 @@ def write_step_by_step_battery_log(
 
     # Calculate energy states (assuming previous energy is available)
     if optimizer_step == 0:
-        e_prev_mwh = params.e_cap_mwh * 0.5  # 50% initial SOC
+        # Use provided initial energy or default to 50% SOC
+        e_prev_mwh = (
+            initial_energy_mwh if initial_energy_mwh is not None else params.e_cap_mwh * 0.5
+        )
     else:
         # In real implementation, this would come from previous step
         e_prev_mwh = row.get("E_prev_MWh", params.e_cap_mwh * 0.5)

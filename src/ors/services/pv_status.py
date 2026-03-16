@@ -14,13 +14,13 @@ def estimate_energy_from_radiance(
     Formula: energy_kwh = solar_radiance * panel_area * efficiency * time_interval_hours
 
     Args:
-        solar_radiance_kw_per_m2: Solar radiance (kW/m²)
-        panel_area_m2: Total panel surface area (m²)
-        panel_efficiency: Panel efficiency ratio (0-1)
-        timestep_minutes: Time step duration in minutes (default: 15)
+        solar_radiance_kw_per_m2 (float): Solar radiance (kW/m²)
+        panel_area_m2 (float): Total panel surface area (m²)
+        panel_efficiency (float): Panel efficiency ratio (0-1)
+        timestep_minutes (int): Time step duration in minutes (default: 15)
 
     Returns:
-        Estimated energy production (kWh)
+        float: Estimated energy production (kWh)
 
     Raises:
         ValueError: If any parameter is out of valid range
@@ -53,13 +53,13 @@ def update_pv_state(
     """Update PV state from telemetry and specification.
 
     Args:
-        spec: PV system specification
-        telemetry: Raw telemetry data
-        timestep_minutes: Time step duration in minutes (default: 15)
-        prev_state: Optional previous state (unused, reserved for future)
+        spec (PVSpec): PV system specification
+        telemetry (PVTelemetry): Raw telemetry data
+        timestep_minutes (int): Time step duration in minutes (default: 15)
+        prev_state (PVState | None): Optional previous state (unused, reserved for future)
 
     Returns:
-        Validated and processed PV state
+        PVState: Validated and processed PV state
 
     Raises:
         ValueError: If timestep_minutes <= 0

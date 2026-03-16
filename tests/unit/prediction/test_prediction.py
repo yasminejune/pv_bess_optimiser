@@ -62,16 +62,19 @@ def test_data_pipeline_load_and_build(tmp_path: Path, monkeypatch: pytest.Monkey
     data_dir = tmp_path / "Data"
     data_dir.mkdir()
 
-    (data_dir / "price_data.csv").write_text("timestamp,Price\n2025-01-01 00:00:00,10\n")
-    (data_dir / "historical_hourly_2025.csv").write_text(
-        "timestamp_utc,temp\n2025-01-01 00:00:00,1\n"
+    (data_dir / "price_data_rotated_2d.csv").write_text("Timestamp,price\n2025-01-01 00:00:00,10\n")
+    (data_dir / "historical_hourly_2023_2025.csv").write_text(
+        "Timestamp,temp\n2025-01-01 00:00:00,1\n"
     )
-    (data_dir / "historical_daily_2025.csv").write_text(
-        "date_utc,sunrise,sunset,daylight_duration\n"
-        "2025-01-01 00:00:00,2025-01-01 08:00:00,2025-01-01 16:00:00,28800\n"
+    (data_dir / "historical_daily_2023_2025.csv").write_text(
+        "Timestamp,daylight_duration\n2025-01-01 00:00:00,28800\n"
     )
 
-    monkeypatch.setattr(data_pipeline.etl, "preprocess_merge", lambda p, w, s: _merged_df())
+    monkeypatch.setattr(
+        data_pipeline,
+        "preprocess_raw_data",
+        lambda p, w, s, drop_missing_price=True: _merged_df(),
+    )
 
     price, weather, sun = data_pipeline.load_source_data(tmp_path)
     assert "Timestamp" in price.columns
@@ -83,17 +86,17 @@ def test_data_pipeline_load_and_build(tmp_path: Path, monkeypatch: pytest.Monkey
 
 
 def test_data_pipeline_missing_files(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="historical_daily_2025.csv"):
+    with pytest.raises(FileNotFoundError, match="price_data_rotated_2d.csv"):
         data_pipeline.load_source_data(tmp_path)
 
     data_dir = tmp_path / "Data"
     data_dir.mkdir()
-    (data_dir / "historical_daily_2025.csv").write_text("date_utc\n2025-01-01\n")
-    with pytest.raises(FileNotFoundError, match="historical_hourly_2025.csv"):
+    (data_dir / "price_data_rotated_2d.csv").write_text("Timestamp,price\n2025-01-01,10\n")
+    with pytest.raises(FileNotFoundError, match="historical_hourly_2023_2025.csv"):
         data_pipeline.load_source_data(tmp_path)
 
-    (data_dir / "historical_hourly_2025.csv").write_text("timestamp_utc\n2025-01-01\n")
-    with pytest.raises(FileNotFoundError, match="price_data.csv"):
+    (data_dir / "historical_hourly_2023_2025.csv").write_text("Timestamp\n2025-01-01\n")
+    with pytest.raises(FileNotFoundError, match="historical_daily_2023_2025.csv"):
         data_pipeline.load_source_data(tmp_path)
 
 

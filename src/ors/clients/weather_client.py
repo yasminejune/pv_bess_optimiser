@@ -66,9 +66,60 @@ DEFAULT_PARAMS = {
     "past_hours": 6,
 }
 
+# Keep below API edge values to avoid "Forecast days is invalid" on large windows.
+MAX_FORECAST_MINUTELY_15 = 1400
+
 
 class WeatherFetcherError(Exception):
     """Raised when weather data fetching or formatting fails in a controlled way."""
+
+
+def _solar_radiance_15_mins_from_archive(
+    client: Client,
+    start_datetime: datetime,
+    end_datetime: datetime,
+) -> pd.DataFrame:
+    """Fetch historical hourly radiation and upsample to 15-minute resolution."""
+    df_hourly = fetch_hist_hourly(
+        client=client,
+        latitude=DEFAULT_PARAMS["latitude"],
+        longitude=DEFAULT_PARAMS["longitude"],
+        start_date=start_datetime.date().isoformat(),
+        end_date=end_datetime.date().isoformat(),
+        hourly_vars=["shortwave_radiation"],
+    )
+
+    if df_hourly.empty:
+        raise WeatherFetcherError(
+            "No historical hourly radiation returned from Open-Meteo Archive API."
+        )
+
+    df_hourly["timestamp_utc"] = pd.to_datetime(df_hourly["timestamp_utc"], utc=True)
+    df_hourly = df_hourly[
+        (df_hourly["timestamp_utc"] >= start_datetime)
+        & (df_hourly["timestamp_utc"] <= end_datetime)
+    ].copy()
+
+    if df_hourly.empty:
+        raise WeatherFetcherError(
+            "No historical radiation data available for the requested time window "
+            f"[{start_datetime}, {end_datetime}]."
+        )
+
+    s_hourly = pd.to_numeric(df_hourly["shortwave_radiation"], errors="coerce")
+    s_hourly.index = df_hourly["timestamp_utc"]
+
+    ts_15 = pd.date_range(start=start_datetime, end=end_datetime, freq="15min", tz="UTC")
+    s_15 = s_hourly.reindex(s_hourly.index.union(ts_15)).sort_index().interpolate(method="time")
+    s_15 = s_15.reindex(ts_15)
+    s_15 = s_15.ffill().bfill().fillna(0.0).clip(lower=0.0)
+
+    return pd.DataFrame(
+        {
+            "timestamp_utc": ts_15,
+            "shortwave_radiation": s_15.to_numpy(),
+        }
+    )
 
 
 def make_client() -> Client | None:
@@ -251,10 +302,9 @@ def solar_radiance_15_mins(
 ) -> pd.DataFrame:
     """Fetch 15-minute solar radiance data for PV power generation modeling.
 
-    Requests data from the Open-Meteo Forecast API and trims the response to
-    the ``[start_datetime, end_datetime]`` window.  The API returns data from
-    the start of the day, so rows before *start_datetime* are discarded.  Rows
-    after *end_datetime* are likewise discarded.
+    Uses Open-Meteo Forecast API for present/future windows and Open-Meteo
+    Archive API for purely historical windows, then returns a 15-minute series
+    trimmed to ``[start_datetime, end_datetime]``.
 
     If the value at *start_datetime* is null (i.e. too far in the future for
     the model to have a prediction), a :class:`WeatherFetcherError` is raised.
@@ -287,75 +337,102 @@ def solar_radiance_15_mins(
             f"start_datetime ({start_datetime}) must not be after end_datetime ({end_datetime})"
         )
 
-    # Calculate the number of 15-minute timesteps from the start of the
-    # start day until the end datetime (the API returns data from midnight).
+    # Historical backtests require archive data, not forecast data.
+    now_utc = datetime.now(tz=timezone.utc)
+    if end_datetime < now_utc:
+        return _solar_radiance_15_mins_from_archive(client, start_datetime, end_datetime)
+
+    def _fetch_window(window_start: datetime, window_end: datetime) -> pd.DataFrame:
+        # Calculate timesteps from midnight (API behavior) to requested end.
+        start_of_day = window_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        total_seconds = (window_end - start_of_day).total_seconds()
+        timesteps = int(total_seconds / (15 * 60)) + 1
+
+        params: dict[str, Any] = {
+            "latitude": DEFAULT_PARAMS["latitude"],
+            "longitude": DEFAULT_PARAMS["longitude"],
+            "minutely_15": ["shortwave_radiation"],
+            "forecast_minutely_15": timesteps,
+            "models": "ukmo_uk_deterministic_2km",
+            "timezone": "GMT",
+        }
+
+        try:
+            responses = client.weather_api(FORECAST_API_URL, params=params)
+        except Exception as e:
+            raise WeatherFetcherError(
+                f"Open-Meteo API request failed for solar radiance "
+                f"(start={window_start}, end={window_end}, timesteps={timesteps}): {e}"
+            ) from e
+
+        if not responses:
+            raise WeatherFetcherError(
+                "No responses returned from Open-Meteo Forecast API for solar radiance."
+            )
+
+        api_response = responses[0]
+        minutely_block = api_response.Minutely15()
+
+        timestamps = pd.date_range(
+            start=pd.to_datetime(minutely_block.Time(), unit="s", utc=True),
+            end=pd.to_datetime(minutely_block.TimeEnd(), unit="s", utc=True),
+            freq=pd.Timedelta(minutes=15),
+            inclusive="left",
+        )
+
+        data = {
+            "timestamp_utc": timestamps,
+            "shortwave_radiation": pd.to_numeric(
+                minutely_block.Variables(0).ValuesAsNumpy(),
+                errors="coerce",
+            ),
+        }
+
+        df_window = pd.DataFrame(data=data)
+        df_window = df_window[
+            (df_window["timestamp_utc"] >= window_start)
+            & (df_window["timestamp_utc"] <= window_end)
+        ]
+
+        if df_window.empty:
+            raise WeatherFetcherError(
+                "No data available for the requested time window "
+                f"[{window_start}, {window_end}]."
+            )
+
+        first_value = df_window.iloc[0]["shortwave_radiation"]
+        if pd.isna(first_value):
+            raise WeatherFetcherError(
+                f"No forecast data available at start_datetime ({window_start}). "
+                "The requested time may be too far in the future."
+            )
+
+        return df_window.dropna(subset=["shortwave_radiation"]).reset_index(drop=True)
+
+    # Fast path for short windows.
     start_of_day = start_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
     total_seconds = (end_datetime - start_of_day).total_seconds()
-    timesteps = int(total_seconds / (15 * 60)) + 1
+    total_timesteps = int(total_seconds / (15 * 60)) + 1
+    if total_timesteps <= MAX_FORECAST_MINUTELY_15:
+        return _fetch_window(start_datetime, end_datetime)
 
-    params: dict[str, Any] = {
-        "latitude": DEFAULT_PARAMS["latitude"],
-        "longitude": DEFAULT_PARAMS["longitude"],
-        "minutely_15": ["shortwave_radiation"],
-        "forecast_minutely_15": timesteps,
-        "models": "ukmo_uk_deterministic_2km",
-        "timezone": "GMT",
-    }
+    # Chunked path for large windows that exceed API limits.
+    max_span = timedelta(minutes=(MAX_FORECAST_MINUTELY_15 - 1) * 15)
+    chunk_start = start_datetime
+    chunks: list[pd.DataFrame] = []
 
-    try:
-        responses = client.weather_api(FORECAST_API_URL, params=params)
-    except Exception as e:
-        raise WeatherFetcherError(
-            f"Open-Meteo API request failed for solar radiance "
-            f"(start={start_datetime}, end={end_datetime}, timesteps={timesteps}): {e}"
-        ) from e
+    while chunk_start <= end_datetime:
+        chunk_day_start = chunk_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        chunk_end = min(end_datetime, chunk_day_start + max_span)
+        chunks.append(_fetch_window(chunk_start, chunk_end))
+        chunk_start = chunk_end + timedelta(minutes=15)
 
-    if not responses:
-        raise WeatherFetcherError(
-            "No responses returned from Open-Meteo Forecast API for solar radiance."
-        )
-
-    api_response = responses[0]
-    minutely_block = api_response.Minutely15()
-
-    timestamps = pd.date_range(
-        start=pd.to_datetime(minutely_block.Time(), unit="s", utc=True),
-        end=pd.to_datetime(minutely_block.TimeEnd(), unit="s", utc=True),
-        freq=pd.Timedelta(minutes=15),
-        inclusive="left",
+    return (
+        pd.concat(chunks, ignore_index=True)
+        .drop_duplicates(subset="timestamp_utc")
+        .sort_values("timestamp_utc")
+        .reset_index(drop=True)
     )
-
-    data = {
-        "timestamp_utc": timestamps,
-        "shortwave_radiation": pd.to_numeric(
-            minutely_block.Variables(0).ValuesAsNumpy(),
-            errors="coerce",
-        ),
-    }
-
-    df = pd.DataFrame(data=data)
-
-    # Trim some rows may be outside the requested window, so filter to the window
-    df = df[(df["timestamp_utc"] >= start_datetime) & (df["timestamp_utc"] <= end_datetime)]
-
-    if df.empty:
-        raise WeatherFetcherError(
-            "No data available for the requested time window "
-            f"[{start_datetime}, {end_datetime}]."
-        )
-
-    # Check that the first row (at start_datetime) has a valid value
-    first_value = df.iloc[0]["shortwave_radiation"]
-    if pd.isna(first_value):
-        raise WeatherFetcherError(
-            f"No forecast data available at start_datetime ({start_datetime}). "
-            "The requested time may be too far in the future."
-        )
-
-    # Drop any remaining rows with null radiation values
-    df = df.dropna(subset=["shortwave_radiation"]).reset_index(drop=True)
-
-    return df
 
 
 def to_daily_df(api_response: WeatherApiResponse, daily_vars: list[str]) -> pd.DataFrame:
