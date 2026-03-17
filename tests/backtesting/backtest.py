@@ -214,7 +214,7 @@ def pregenerate_solar(
         return None
 
     # Build list of (chunk_start, chunk_end) pairs
-    window_end = end_dt + timedelta(days=1)  # extra day for look-ahead
+    window_end = end_dt + timedelta(days=1)   # extra day for look-ahead
     boundaries: list[tuple[datetime, datetime]] = []
     cursor = start_dt
     while cursor < window_end:
@@ -274,7 +274,8 @@ def build_price_solar_dicts(
     last_price = float(rows["price"].iloc[-1]) if not rows.empty else 100.0
 
     price: dict[int, float] = {
-        i + 1: float(rows.loc[i, "price"]) if i < len(rows) else last_price for i in range(N_D)
+        i + 1: float(rows.loc[i, "price"]) if i < len(rows) else last_price
+        for i in range(N_D)
     }
 
     solar: dict[int, float] = {}
@@ -284,7 +285,9 @@ def build_price_solar_dicts(
         for i in range(N_D):
             pv_idx = pv_base + i
             solar[i + 1] = (
-                float(df_solar.iloc[pv_idx]["generation_MW"]) if pv_idx < len(df_solar) else 0.0
+                float(df_solar.iloc[pv_idx]["generation_MW"])
+                if pv_idx < len(df_solar)
+                else 0.0
             )
     else:
         solar = {i + 1: 0.0 for i in range(N_D)}
@@ -389,6 +392,8 @@ def run_single_optimize(
             "termination_condition": "exception",
             "error": f"{type(exc).__name__}: {exc}",
         }
+    finally:
+        pass  # E0 is no longer a module-level constant
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +551,7 @@ def run_backtest(
     trace_file = None
     trace_writer = None
     if trace_output_path is not None:
-        trace_file = open(trace_output_path, "w", newline="", encoding="utf-8")  # noqa: SIM115
+        trace_file = open(trace_output_path, "w", newline="", encoding="utf-8")
         trace_writer = csv.DictWriter(trace_file, fieldnames=trace_fieldnames)
         trace_writer.writeheader()
         trace_file.flush()

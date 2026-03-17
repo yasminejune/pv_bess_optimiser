@@ -104,6 +104,9 @@ omit = [
     "*/venv/*",
     "*/.venv/*",
     "src/ors/services/prediction/*.ipynb",
+    "src/ors/services/battery/demo.py",
+    "src/ors/services/battery/test.py",
+    "src/ors/services/battery_to_optimization/test.py",
 ]
 
 [tool.coverage.report]

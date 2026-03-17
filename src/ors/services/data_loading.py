@@ -204,7 +204,7 @@ def _load_historical_prices(
 
     # Convert to 1-indexed dict
     price_dict = {
-        i + 1: float(row["price"]) for i, row in enumerate(period_data.itertuples(index=False))
+        i + 1: float(row.price) for i, row in enumerate(period_data.itertuples(index=False))
     }
 
     # Calculate terminal price from historical data
