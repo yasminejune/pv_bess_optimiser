@@ -118,6 +118,3 @@
 
 ![Correlation Heatmap](correlation_heatmap.png)
 
-### Countplots — Categorical Features
-
-![Countplots — Categorical Features](countplots_all_categorical.png)
