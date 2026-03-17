@@ -12,17 +12,24 @@ This shows the pattern for building simulations that use battery_management
 functions rather than having battery_management run simulations itself.
 """
 
+import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
+
+# Ensure project src directory is on path for imports when run directly
+_SRC_DIR = Path(__file__).parent.parent.parent.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
 
 # Import handling for both mypy (relative) and direct execution (absolute)
 try:
     # When run from project root with mypy or as a module
+    from ..battery_to_optimization.battery_inference import battery_spec_to_params
     from .battery_management import (
         BatteryParams,
         compute_losses,
         create_log_entry,
-        load_battery_params_and_defaults,
         step_energy,
         write_simulation_csv,
     )
@@ -32,10 +39,14 @@ except (ImportError, ModuleNotFoundError):
         BatteryParams,
         compute_losses,
         create_log_entry,
-        load_battery_params_and_defaults,
         step_energy,
         write_simulation_csv,
     )
+
+    sys.path.insert(0, str(Path(__file__).parent.parent / "battery_to_optimization"))
+    from battery_inference import battery_spec_to_params  # type: ignore[import-not-found,no-redef]
+
+from ors.config.optimization_config import load_config_from_json
 
 
 class BatterySimulator:
@@ -278,36 +289,40 @@ def main() -> None:
     print("Battery Simulation Demo")
     print("=" * 40)
 
-    # 1. Load configuration
-    config_path = "src/ors/services/battery/battery_config.json"
+    # 1. Load configuration from the optimization config template
+    config_path = str(
+        Path(__file__).parent.parent.parent.parent.parent
+        / "config_templates"
+        / "example_full_config.json"
+    )
 
-    try:
-        params, defaults = load_battery_params_and_defaults(config_path)
-        print(f"Success: Loaded configuration from {config_path}")
-        print(f"  Battery: {params.p_rated_mw} MW / {params.e_cap_mwh} MWh")
-        print(f"  Time step: {defaults['dt_hours']} hours")
-    except FileNotFoundError:
-        print(f"Warning: Config file {config_path} not found. Using default parameters.")
-        params = BatteryParams()
-        defaults = {"dt_hours": 0.25, "enforce_bounds": True}
+    config = load_config_from_json(config_path)
+    params = battery_spec_to_params(config.battery)
+    dt_hours = config.optimization.time_step_minutes / 60
+
+    print(f"Success: Loaded configuration from {config_path}")
+    print(f"  Battery: {params.p_rated_mw} MW / {params.e_cap_mwh} MWh")
+    print(f"  Time step: {dt_hours} hours")
 
     # 2. Create simulator instance
-    simulator = BatterySimulator(
-        params=params, dt_hours=defaults["dt_hours"], enforce_bounds=defaults["enforce_bounds"]
-    )
+    simulator = BatterySimulator(params=params, dt_hours=dt_hours, enforce_bounds=True)
 
     # 3. Generate power profiles for 24 hours (96 steps at 15-min intervals)
     print("\nInfo: Setting up simulation...")
 
     num_steps = 96  # 24 hours at 15-minute intervals
     power_profiles = create_example_power_profiles(num_steps)
-    initial_energy = 150.0  # Start at 50% SOC for 300 MWh battery
+    initial_energy = (
+        config.battery.current_energy_mwh
+        if config.battery.current_energy_mwh is not None
+        else params.e_cap_mwh * 0.5
+    )
     start_time = datetime(2024, 6, 15, 0, 0, 0)  # Midnight start
 
     print(f"  Initial energy: {initial_energy} MWh")
     print(f"  Simulation steps: {num_steps}")
-    print(f"  Total duration: {num_steps * defaults['dt_hours']} hours")
-    print(f"  Time step: {defaults['dt_hours']} hours ({defaults['dt_hours']*60} minutes)")
+    print(f"  Total duration: {num_steps * dt_hours} hours")
+    print(f"  Time step: {dt_hours} hours ({dt_hours * 60} minutes)")
 
     # 4. Run simulation
     print("\nInfo: Running simulation...")

@@ -23,14 +23,14 @@ from pyomo.environ import SolverFactory, value
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import src.ors.services.optimizer.optimizer as opt_module
 from src.ors.config.optimization_config import OptimizationConfig, load_config_from_json
 from src.ors.domain.models.battery import BatterySpec, BatteryState, BatteryTelemetry
+from src.ors.services.battery.battery_management import BatteryParams
 from src.ors.services.battery.battery_status import update_battery_state
 from src.ors.services.battery_to_optimization.battery_inference import (
     create_enhanced_optimizer_output,
 )
-from src.ors.services.battery.battery_management import BatteryParams
-import src.ors.services.optimizer.optimizer as opt_module
 
 
 class OptimizationRunner:
@@ -131,38 +131,39 @@ class OptimizationRunner:
         # Load solar data using the same service backtesting uses
         if self.config.has_pv:
             try:
-                from src.ors.services.weather_to_pv import generate_pv_power_for_date_range
-                from src.ors.config.pv_config import SiteType, get_pv_config
                 from datetime import timezone
-                
+
+                from src.ors.config.pv_config import SiteType, get_pv_config
+                from src.ors.services.weather_to_pv import generate_pv_power_for_date_range
+
                 if self.verbose:
                     print("Info: Generating PV power forecast...")
-                
+
                 # Use same config as backtesting
                 pv_config = get_pv_config(SiteType.BURST_1)
-                
+
                 # Convert timezone-naive datetimes to timezone-aware UTC datetimes
                 start_datetime_utc = start_datetime.replace(tzinfo=timezone.utc)
                 end_datetime_utc = end_datetime.replace(tzinfo=timezone.utc)
-                
+
                 # Generate PV data
                 df = generate_pv_power_for_date_range(
                     config=pv_config,
                     start_datetime=start_datetime_utc,
                     end_datetime=end_datetime_utc,
                 )
-                
+
                 # Convert to MW dict (kW -> MW conversion like backtesting)
                 df["generation_MW"] = df["generation_kw"] / 1000.0
                 solar_data = {
-                    i + 1: float(df.iloc[i]["generation_MW"]) 
+                    i + 1: float(df.iloc[i]["generation_MW"])
                     for i in range(min(len(df), self.config.total_time_steps))
                 }
-                
+
                 # Fill any missing timesteps with zero
                 for i in range(len(solar_data) + 1, self.config.total_time_steps + 1):
                     solar_data[i] = 0.0
-                    
+
             except Exception as e:
                 print(f"Warning: Solar generation failed: {e}")
                 print("Info: Using dummy solar pattern")
@@ -259,7 +260,7 @@ class OptimizationRunner:
                 solar_data,
                 terminal_price,
                 cycles_used_today,
-                len(price_data),  # t_boundary  
+                len(price_data),  # t_boundary
                 q_init=0,
                 z_dis_init=0,
                 verbose=self.verbose,
@@ -294,12 +295,15 @@ class OptimizationRunner:
 
             # Check solution status
             from pyomo.opt import SolverStatus, TerminationCondition
-            
-            if (result.solver.status != SolverStatus.ok or 
-                result.solver.termination_condition not in {
+
+            if (
+                result.solver.status != SolverStatus.ok
+                or result.solver.termination_condition
+                not in {
                     TerminationCondition.optimal,
                     TerminationCondition.feasible,
-                }):
+                }
+            ):
                 raise RuntimeError(
                     f"Optimization failed: status={result.solver.status}, "
                     f"termination={result.solver.termination_condition}"
@@ -313,7 +317,7 @@ class OptimizationRunner:
                 print(f"Success: Optimization completed - Total profit: £{total_profit:.2f}")
 
             return model_results
-            
+
         finally:
             # Restore original E0 like backtesting does
             opt_module.E0 = original_e0
@@ -351,7 +355,7 @@ class OptimizationRunner:
             try:
                 # Convert BatterySpec to BatteryParams for validation consistency
                 battery_params = self._convert_battery_spec_to_params(battery_spec)
-                
+
                 # Use the battery integration module
                 detailed_logs = create_enhanced_optimizer_output(
                     df_results=results_df,
@@ -365,7 +369,9 @@ class OptimizationRunner:
                 )
 
                 if self.verbose and detailed_logs:
-                    print(f"Success: Detailed logs created with {detailed_logs['num_steps']} entries")
+                    print(
+                        f"Success: Detailed logs created with {detailed_logs['num_steps']} entries"
+                    )
 
             except Exception as e:
                 print(f"Warning: Detailed logs failed: {e}")
@@ -395,7 +401,7 @@ class OptimizationRunner:
         # Energy summary
         final_energy_mwh = model_results["final_energy_mwh"]
         final_soc_percent = (final_energy_mwh / self.config.battery.energy_capacity_mwh) * 100
-        
+
         energy_stats = {
             "initial_energy": model_results["initial_energy_mwh"],
             "final_energy": final_energy_mwh,
@@ -541,6 +547,7 @@ class OptimizationRunner:
     ) -> tuple[dict[int, float], float]:
         """Generate dummy price data with realistic daily patterns."""
         import math
+
         num_steps = int((end_datetime - start_datetime).total_seconds() / 60 / time_step_minutes)
         price_dict = {}
 
@@ -563,14 +570,12 @@ class OptimizationRunner:
     ) -> dict[int, float]:
         """Generate dummy solar generation data."""
         import math
+
         num_steps = int((end_datetime - start_datetime).total_seconds() / 60 / time_step_minutes)
         solar_dict = {}
 
         # Get rated power from config or default
-        if self.config.pv:
-            rated_power_mw = self.config.pv.rated_power_kw / 1000.0
-        else:
-            rated_power_mw = 1.0  # Default 1 MW
+        rated_power_mw = self.config.pv.rated_power_kw / 1000.0 if self.config.pv else 1.0
 
         for i in range(1, num_steps + 1):
             hour_of_day = ((i - 1) * time_step_minutes / 60) % 24
@@ -626,71 +631,75 @@ class OptimizationRunner:
         print("\nResults Summary")
         print(f"Period: {summary['period']}")
         print(f"Total Profit: £{summary['financial']['total_profit']:.2f}")
-        print(f"Cycles Used: {summary['operations']['cycles_used']}/{summary['operations']['max_cycles_per_day']}")
-        print(f"Battery charge at end of {summary['duration_hours']}-hour period: {summary['energy']['final_soc_percent']:.1f}%")
+        print(
+            f"Cycles Used: {summary['operations']['cycles_used']}/{summary['operations']['max_cycles_per_day']}"
+        )
+        print(
+            f"Battery charge at end of {summary['duration_hours']}-hour period: {summary['energy']['final_soc_percent']:.1f}%"
+        )
 
         print("\nOutput Files:")
         print(f"  - Main results: {self.results['optimization_results']['main_csv_path']}")
         if self.results["optimization_results"]["detailed_log_path"]:
-            print(
-                f"  - Detailed logs: {self.results['optimization_results']['detailed_log_path']}"
-            )
+            print(f"  - Detailed logs: {self.results['optimization_results']['detailed_log_path']}")
 
         # Print specific recommendation for first timestep
         self._print_next_recommendation()
-        print(f"\nInfo: All subsequent timesteps through the end of the optimization horizon are available in {self.results['optimization_results']['main_csv_path']}.")
+        print(
+            f"\nInfo: All subsequent timesteps through the end of the optimization horizon are available in {self.results['optimization_results']['main_csv_path']}."
+        )
 
     def _get_next_recommendation(self) -> dict[str, any] | None:
         """Get recommendation for first 15-minute timestep."""
         try:
             from datetime import timedelta
-            
+
             # Calculate target timestamp (start + 15 minutes)
             target_time = self.config.optimization_start_datetime + timedelta(minutes=15)
-            
+
             # Read the results CSV that was just written
-            csv_path = self.results['optimization_results']['main_csv_path']
+            csv_path = self.results["optimization_results"]["main_csv_path"]
             df = pd.read_csv(csv_path)
-            
+
             # Convert timestamp column to datetime if needed
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+
             # Find the closest matching row at or after target time
-            future_rows = df[df['timestamp'] >= target_time]
+            future_rows = df[df["timestamp"] >= target_time]
             if len(future_rows) == 0:
                 # Fallback to closest row if no future rows
-                time_diffs = abs(df['timestamp'] - target_time)
+                time_diffs = abs(df["timestamp"] - target_time)
                 closest_idx = time_diffs.idxmin()
                 target_row = df.iloc[closest_idx]
             else:
                 target_row = future_rows.iloc[0]
-            
+
             # Infer action from power flows
             action = self._infer_action(target_row)
-            
+
             return {
-                'timestamp': target_row['timestamp'],
-                'action': action,
-                'grid_power': target_row.get('P_grid_MW', 0),
-                'solar_power': target_row.get('P_sol_bat_MW', 0),
-                'solar_export': target_row.get('P_sol_sell_MW', 0),
-                'discharge_power': target_row.get('P_dis_MW', 0),
-                'energy_after': target_row.get('E_MWh', 0),
-                'price': target_row.get('price_intraday', 0),
+                "timestamp": target_row["timestamp"],
+                "action": action,
+                "grid_power": target_row.get("P_grid_MW", 0),
+                "solar_power": target_row.get("P_sol_bat_MW", 0),
+                "solar_export": target_row.get("P_sol_sell_MW", 0),
+                "discharge_power": target_row.get("P_dis_MW", 0),
+                "energy_after": target_row.get("E_MWh", 0),
+                "price": target_row.get("price_intraday", 0),
             }
-            
+
         except Exception as e:
             if self.verbose:
                 print(f"Warning: Could not generate specific recommendation: {e}")
             return None
-    
-    def _infer_action(self, row) -> str:
+
+    def _infer_action(self, row: dict) -> str:
         """Infer the main action from power flow values."""
-        grid_power = row.get('P_grid_MW', 0)
-        solar_bat = row.get('P_sol_bat_MW', 0) 
-        solar_export = row.get('P_sol_sell_MW', 0)
-        discharge = row.get('P_dis_MW', 0)
-        
+        grid_power = row.get("P_grid_MW", 0)
+        solar_bat = row.get("P_sol_bat_MW", 0)
+        solar_export = row.get("P_sol_sell_MW", 0)
+        discharge = row.get("P_dis_MW", 0)
+
         # Priority order for action classification
         if discharge > 0.1:
             return "Battery discharge"
@@ -702,60 +711,60 @@ class OptimizationRunner:
             return "Solar export"
         else:
             return "Idle"
-    
+
     def _print_next_recommendation(self) -> None:
         """Print specific recommendation for first timestep."""
         recommendation = self._get_next_recommendation()
-        
+
         if recommendation is None:
             print("\nInfo: See the CSV files for timestep-level recommendations.")
             return
-            
+
         print("\nNext recommended step")
         print("-" * 21)
-        
+
         # Format timestamp nicely
-        timestamp = recommendation['timestamp']
-        if hasattr(timestamp, 'strftime'):
-            time_str = timestamp.strftime('%Y-%m-%d %H:%M')
+        timestamp = recommendation["timestamp"]
+        if hasattr(timestamp, "strftime"):
+            time_str = timestamp.strftime("%Y-%m-%d %H:%M")
         else:
             time_str = str(timestamp)
-            
+
         print(f"Time: {time_str}")
         print(f"Action: {recommendation['action']}")
         print(f"Grid power: {recommendation['grid_power']:.2f} MW")
-        
+
         # Only show solar power if PV system is configured
         if self.config.has_pv:
             print(f"Solar to battery: {recommendation['solar_power']:.2f} MW")
             print(f"Solar export: {recommendation['solar_export']:.2f} MW")
-            
+
         print(f"Discharge power: {recommendation['discharge_power']:.2f} MW")
         print(f"Energy after step: {recommendation['energy_after']:.2f} MWh")
         print(f"Price: £{recommendation['price']:.2f}/MWh")
 
     def _convert_battery_spec_to_params(self, battery_spec: BatterySpec) -> BatteryParams:
         """Convert BatterySpec from main config to BatteryParams for validation.
-        
+
         Args:
             battery_spec: Battery specification from main config
-            
+
         Returns:
             BatteryParams: Equivalent battery parameters for validation
         """
         # Calculate duration from capacity and power rating
         e_duration_hours = battery_spec.energy_capacity_mwh / battery_spec.rated_power_mw
-        
+
         # Calculate auxiliary power fraction from absolute value
         a_aux = battery_spec.auxiliary_power_mw / battery_spec.rated_power_mw
-        
+
         # Convert SOC percentages to fractions
         e_min_frac = battery_spec.min_soc_percent / 100.0
         e_max_frac = battery_spec.max_soc_percent / 100.0
-        
+
         return BatteryParams(
             p_rated_mw=battery_spec.rated_power_mw,
-            eta_ch=battery_spec.charge_efficiency, 
+            eta_ch=battery_spec.charge_efficiency,
             eta_dis=battery_spec.discharge_efficiency,
             a_aux=a_aux,
             r_sd_per_hour=battery_spec.self_discharge_rate_per_hour,
@@ -763,7 +772,7 @@ class OptimizationRunner:
             e_min_frac=e_min_frac,
             e_max_frac=e_max_frac,
         )
-    
+
     def _print_error(self, error_msg: str) -> None:
         """Print error message."""
         print(f"\nError: {error_msg}")

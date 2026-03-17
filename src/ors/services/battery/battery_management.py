@@ -28,7 +28,6 @@ Usage:
 """
 
 import csv
-import json
 from pathlib import Path
 from typing import Any
 
@@ -333,116 +332,6 @@ def step_energy(
         e_next = clamp(e_next, params.e_min_mwh, params.e_max_mwh)
 
     return float(e_next)
-
-
-# =============================================================================
-# CONFIGURATION MANAGEMENT
-# =============================================================================
-
-
-def load_config(config_path: str | Path) -> dict[str, Any]:
-    """Load configuration from JSON file.
-
-    Args:
-        config_path (str | Path): Path to JSON configuration file
-
-    Returns:
-        dict[str, Any]: Dictionary containing configuration data
-
-    Raises:
-        FileNotFoundError: If config file doesn't exist
-        ValueError: If JSON is invalid or missing required fields
-    """
-    try:
-        with open(config_path) as f:
-            config: dict[str, Any] = json.load(f)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Configuration file not found: {config_path}") from None
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON in config file: {e}") from e
-
-    # Validate required sections
-    if "battery_params" not in config:
-        raise ValueError("Missing 'battery_params' section in config")
-    if "simulation_defaults" not in config:
-        raise ValueError("Missing 'simulation_defaults' section in config")
-
-    return dict[str, Any](config)
-
-
-def load_battery_params(config_path: str | Path) -> BatteryParams:
-    """Load BatteryParams from JSON config file.
-
-    Args:
-        config_path (str | Path): Path to JSON configuration file
-
-    Returns:
-        BatteryParams: BatteryParams object with loaded parameters
-
-    Raises:
-        FileNotFoundError: If config file doesn't exist
-        ValueError: If config is invalid or missing required battery parameters
-    """
-    config = load_config(config_path)
-    battery_config = config["battery_params"]
-
-    # Validate all required parameters are present
-    required_params = {
-        "p_rated_mw",
-        "eta_ch",
-        "eta_dis",
-        "a_aux",
-        "r_sd_per_hour",
-        "e_duration_hours",
-        "e_min_frac",
-        "e_max_frac",
-    }
-    missing = required_params - set(battery_config.keys())
-    if missing:
-        raise ValueError(f"Missing battery parameters in config: {missing}")
-
-    return BatteryParams(**battery_config)
-
-
-def load_simulation_defaults(config_path: str | Path) -> dict[str, Any]:
-    """Load simulation defaults from JSON config file.
-
-    Args:
-        config_path (str | Path): Path to JSON configuration file
-
-    Returns:
-        dict[str, Any]: Dictionary containing simulation default values
-
-    Raises:
-        FileNotFoundError: If config file doesn't exist
-        ValueError: If config is invalid or missing simulation defaults
-    """
-    config = load_config(config_path)
-    sim_config: dict[str, Any] = config["simulation_defaults"]
-
-    # Validate required simulation parameters
-    required_sim_params = {"dt_hours", "enforce_bounds"}
-    missing = required_sim_params - set(sim_config.keys())
-    if missing:
-        raise ValueError(f"Missing simulation parameters in config: {missing}")
-
-    return dict[str, Any](sim_config)
-
-
-def load_battery_params_and_defaults(
-    config_path: str | Path,
-) -> tuple[BatteryParams, dict[str, Any]]:
-    """Load both battery parameters and simulation defaults from config file.
-
-    Args:
-        config_path (str | Path): Path to JSON configuration file
-
-    Returns:
-        tuple[BatteryParams, dict[str, Any]]: Tuple of (BatteryParams, simulation_defaults)
-    """
-    params = load_battery_params(config_path)
-    defaults = load_simulation_defaults(config_path)
-    return params, defaults
 
 
 # =============================================================================

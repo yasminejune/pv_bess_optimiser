@@ -11,32 +11,37 @@ from typing import Any
 
 import pandas as pd
 
+from ors.config.optimization_config import BatteryConfiguration
+
 # Import battery management functions with proper absolute imports
 from ors.services.battery.battery_management import (
     BatteryParams,
     compute_losses,
     create_log_entry,
-    load_battery_params_and_defaults,
     step_energy,
     write_simulation_csv,
 )
 
 
-def load_optimizer_battery_config(
-    config_path: str | None = None,
-) -> tuple[BatteryParams, dict[str, Any]]:
-    """Load battery configuration for optimizer.
+def battery_spec_to_params(battery_config: BatteryConfiguration) -> BatteryParams:
+    """Convert BatteryConfiguration (template format) to BatteryParams (physics format).
 
     Args:
-        config_path (str | None): Optional path to config file. If None, uses default location.
+        battery_config: Battery configuration from the optimization config template
 
     Returns:
-        tuple[BatteryParams, dict[str, Any]]: Tuple of (BatteryParams, simulation_defaults)
+        BatteryParams: Battery parameters for use in simulation and optimization
     """
-    if config_path is None:
-        config_path = str(Path(__file__).parent.parent / "battery" / "battery_config.json")
-
-    return load_battery_params_and_defaults(config_path)
+    return BatteryParams(
+        p_rated_mw=battery_config.rated_power_mw,
+        eta_ch=battery_config.charge_efficiency,
+        eta_dis=battery_config.discharge_efficiency,
+        a_aux=battery_config.auxiliary_power_mw / battery_config.rated_power_mw,
+        r_sd_per_hour=battery_config.self_discharge_rate_per_hour,
+        e_duration_hours=battery_config.energy_capacity_mwh / battery_config.rated_power_mw,
+        e_min_frac=battery_config.min_soc_percent / 100.0,
+        e_max_frac=battery_config.max_soc_percent / 100.0,
+    )
 
 
 def create_optimizer_log_entries(
@@ -68,7 +73,9 @@ def create_optimizer_log_entries(
     logs = []
 
     if verbose:
-        print(f"Info: Creating detailed step-by-step battery logs for {len(df_results)} timesteps...")
+        print(
+            f"Info: Creating detailed step-by-step battery logs for {len(df_results)} timesteps..."
+        )
         print(f"Info: DataFrame shape: {df_results.shape}")
         print(f"Info: DataFrame columns: {list(df_results.columns)}")
     else:
@@ -140,7 +147,7 @@ def create_optimizer_log_entries(
             # The log_entry already contains all required battery module fields
 
             logs.append(log_entry)
-            
+
             if verbose:
                 print(f"Success: Step {step} logged")
 
@@ -178,10 +185,9 @@ def create_optimizer_log_entries(
 def export_optimizer_results(
     df_results: pd.DataFrame,
     csv_path: str,
-    params: BatteryParams | None = None,
+    params: BatteryParams,
     dt_hours: float = 0.25,
     start_datetime: datetime | None = None,
-    config_path: str | None = None,
     initial_energy_mwh: float | None = None,
 ) -> None:
     """Export optimizer results using battery module CSV format.
@@ -189,15 +195,11 @@ def export_optimizer_results(
     Args:
         df_results (pd.DataFrame): DataFrame with optimizer results
         csv_path (str): Path where CSV should be written
-        params (BatteryParams | None): Battery parameters (loaded from config if None)
+        params (BatteryParams): Battery parameters from battery_spec_to_params()
         dt_hours (float): Time step duration in hours
         start_datetime (datetime | None): Optional start time for timestamping
-        config_path (str | None): Optional path to battery config file
         initial_energy_mwh (float | None): Initial battery energy state. If None, uses 50% SOC.
     """
-    if params is None:
-        params, _ = load_optimizer_battery_config(config_path)
-
     logs = create_optimizer_log_entries(
         df_results=df_results,
         params=params,
@@ -292,11 +294,10 @@ def validate_optimizer_energy_balance(
 def create_enhanced_optimizer_output(
     df_results: pd.DataFrame,
     csv_path: str,
-    params: BatteryParams | None = None,
+    params: BatteryParams,
     dt_hours: float = 0.25,
     start_datetime: datetime | None = None,
     validate: bool = True,
-    config_path: str | None = None,
     initial_energy_mwh: float | None = None,
     verbose: bool = False,
 ) -> dict[str, Any]:
@@ -308,20 +309,16 @@ def create_enhanced_optimizer_output(
     Args:
         df_results (pd.DataFrame): DataFrame with optimizer results
         csv_path (str): Path where enhanced CSV should be written
-        params (BatteryParams | None): Battery parameters (loaded from config if None)
+        params (BatteryParams): Battery parameters from battery_spec_to_params()
         dt_hours (float): Time step duration in hours
         start_datetime (datetime | None): Optional start time for timestamping
         validate (bool): Whether to validate energy balance
-        config_path (str | None): Optional path to battery config file
         initial_energy_mwh (float | None): Initial battery energy state. If None, uses 50% SOC.
         verbose (bool): Enable verbose step-by-step output
 
     Returns:
         dict[str, Any]: Dictionary with processing results and validation info
     """
-    if params is None:
-        params, _ = load_optimizer_battery_config(config_path)
-
     print("Info: Creating enhanced battery output with step-by-step logging...")
     if verbose:
         print(f"Info: Battery: {params.p_rated_mw} MW / {params.e_cap_mwh} MWh")

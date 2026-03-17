@@ -19,16 +19,13 @@ Where:
 ## Quick Start
 
 ```python
-from battery_management import (
-    BatteryParams, 
-    step_energy, 
-    compute_losses,
-    load_battery_params, 
-    write_simulation_csv
-)
+from battery_management import BatteryParams, step_energy, compute_losses, write_simulation_csv
+from ors.services.battery_to_optimization.battery_inference import battery_spec_to_params
+from ors.config.optimization_config import load_config_from_json
 
-# Load battery configuration
-params = load_battery_params('battery_config.json')
+# Load battery configuration from the optimization config template
+config = load_config_from_json('config_templates/example_full_config.json')
+params = battery_spec_to_params(config.battery)
 
 # Simulate one time step
 new_energy = step_energy(
@@ -183,58 +180,9 @@ Utility function to constrain a value within specified bounds.
 
 **Returns:** Constrained value
 
-### Configuration Management
+### Configuration
 
-#### `load_config()`
-Loads configuration from JSON file with validation.
-
-**Parameters:**
-- `config_path`: Path to JSON configuration file
-
-**Returns:** Dictionary containing configuration data
-
-**Raises:**
-- `FileNotFoundError`: If config file doesn't exist
-- `ValueError`: If JSON is invalid or missing required sections
-
-#### `load_battery_params()`
-Loads BatteryParams from JSON configuration file.
-
-**Parameters:**
-- `config_path`: Path to JSON configuration file
-
-**Returns:** BatteryParams object
-
-**Example:**
-```python
-params = load_battery_params('battery_config.json')
-```
-
-#### `load_simulation_defaults()`
-Loads simulation default settings from JSON configuration.
-
-**Parameters:**
-- `config_path`: Path to JSON configuration file
-
-**Returns:** Dictionary containing simulation defaults
-
-#### `load_battery_params_and_defaults()`
-Convenience function to load both battery parameters and simulation defaults.
-
-**Parameters:**
-- `config_path`: Path to JSON configuration file
-
-**Returns:** Tuple of (BatteryParams, simulation_defaults)
-
-**Example:**
-```python
-params, defaults = load_battery_params_and_defaults('battery_config.json')
-simulator = BatterySimulator(
-    params=params, 
-    dt_hours=defaults['dt_hours'],
-    enforce_bounds=defaults['enforce_bounds']
-)
-```
+`BatteryParams` is created via `battery_spec_to_params()` in the `battery_to_optimization` module, which translates from the optimization config template format. See [battery_to_optimization/README.md](../battery_to_optimization/README.md) for details.
 
 ### CSV Export Functions
 
@@ -303,29 +251,6 @@ log_entry = create_log_entry(
 )
 ```
 
-## Configuration File Format
-
-The module expects JSON configuration files with the following structure:
-
-```json
-{
-  "battery_params": {
-    "p_rated_mw": 100.0,
-    "eta_ch": 0.97,
-    "eta_dis": 0.97,
-    "a_aux": 0.005,
-    "r_sd_per_hour": 0.0005,
-    "e_duration_hours": 3.0,
-    "e_min_frac": 0.1,
-    "e_max_frac": 0.9
-  },
-  "simulation_defaults": {
-    "dt_hours": 0.25,
-    "enforce_bounds": true
-  }
-}
-```
-
 ## Usage Examples
 
 ### Basic Energy Step Calculation
@@ -349,15 +274,19 @@ print(f"Energy after charging: {energy_new:.1f} MWh")
 
 ### Full Simulation with CSV Export
 ```python
-from battery_management import *
+from battery_management import BatteryParams, step_energy, compute_losses, create_log_entry, write_simulation_csv
+from ors.services.battery_to_optimization.battery_inference import battery_spec_to_params
+from ors.config.optimization_config import load_config_from_json
 from datetime import datetime
 
-# Load configuration
-params, defaults = load_battery_params_and_defaults('battery_config.json')
+# Load configuration from the optimization config template
+config = load_config_from_json('config_templates/example_full_config.json')
+params = battery_spec_to_params(config.battery)
+dt_hours = config.optimization.time_step_minutes / 60
 
 # Initialize simulation
 logs = []
-energy = 150.0  # Starting energy
+energy = params.e_cap_mwh * 0.5  # Start at 50% SOC
 
 # Run simulation for 24 steps (6 hours at 15-min steps)
 for step in range(24):
@@ -365,7 +294,7 @@ for step in range(24):
     p_grid = 50.0 if step < 12 else -25.0  # Charge then discharge
     p_solar = 30.0 if 4 <= step <= 16 else 0.0  # Solar during day
     p_discharge = 60.0 if step >= 16 else 0.0  # Evening discharge
-    
+
     # Calculate losses
     losses = compute_losses(
         e_prev_mwh=energy,
@@ -373,9 +302,9 @@ for step in range(24):
         p_sol_mw=p_solar,
         p_dis_mw=p_discharge,
         params=params,
-        dt_hours=defaults['dt_hours']
+        dt_hours=dt_hours
     )
-    
+
     # Update energy
     energy_new = step_energy(
         e_prev_mwh=energy,
@@ -383,14 +312,14 @@ for step in range(24):
         p_sol_mw=p_solar,
         p_dis_mw=p_discharge,
         params=params,
-        dt_hours=defaults['dt_hours']
+        dt_hours=dt_hours
     )
-    
+
     # Create log entry
     log_entry = create_log_entry(
         step=step,
-        t_hours=step * defaults['dt_hours'],
-        dt_hours=defaults['dt_hours'],
+        t_hours=step * dt_hours,
+        dt_hours=dt_hours,
         p_grid_mw=p_grid,
         p_sol_mw=p_solar,
         p_dis_mw=p_discharge,
@@ -400,7 +329,7 @@ for step in range(24):
         eta_ch=params.eta_ch,
         timestamp_iso=datetime.now().isoformat()
     )
-    
+
     logs.append(log_entry)
     energy = energy_new
 
@@ -459,8 +388,7 @@ python -m pytest test_comprehensive.py -v
 Test coverage includes:
 - Parameter validation and edge cases
 - Energy equation accuracy
-- Loss calculation correctness  
-- Configuration loading and error handling
+- Loss calculation correctness
 - CSV export functionality
 - Immutability of data classes
 
@@ -579,7 +507,7 @@ print(f"Quality flags: {state.quality_flags}")
 ## Dependencies
 
 - **Python 3.9+**: Type hints and `|` union syntax
-- **Standard Library Only**: `json`, `csv`, `pathlib`, `datetime`, `typing`
+- **Standard Library Only**: `csv`, `datetime`, `typing`
 - **Optional**: `pytest` for running tests
 
 ## Design Philosophy

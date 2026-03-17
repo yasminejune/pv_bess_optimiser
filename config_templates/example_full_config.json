@@ -24,7 +24,7 @@
     "max_cycles_per_day": 2,
     "charge_efficiency": 0.97,
     "discharge_efficiency": 0.97,
-    "auxiliary_power_mw": 0.5,
+    "auxiliary_power_mw": 0.3,
     "self_discharge_rate_per_hour": 0.0005,
     "current_energy_mwh": 100.0,
     "current_power_mw": 0.0,

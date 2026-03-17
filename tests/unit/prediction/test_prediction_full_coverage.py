@@ -34,6 +34,12 @@ class DummyXGBRegressor:
         Path(path).write_text("dummy-model")
 
 
+class DummyModel(DummyXGBRegressor):
+    def __init__(self):
+        super().__init__()
+        self.feature_importances_ = np.array([0.6, 0.4, 0.2])
+
+
 class FixedDateTime:
     @classmethod
     def now(cls) -> real_datetime:
@@ -56,38 +62,38 @@ def test_data_pipeline_load_and_build(tmp_path: Path, monkeypatch: pytest.Monkey
     data_dir = tmp_path / "Data"
     data_dir.mkdir()
 
-    (data_dir / "price_data.csv").write_text("timestamp,Price\n2025-01-01 00:00:00,10\n")
-    (data_dir / "historical_hourly_2025.csv").write_text(
+    (data_dir / "price_data_rotated_2d.csv").write_text("timestamp,Price\n2025-01-01 00:00:00,10\n")
+    (data_dir / "historical_hourly_2023_2025.csv").write_text(
         "timestamp_utc,temp\n2025-01-01 00:00:00,1\n"
     )
-    (data_dir / "historical_daily_2025.csv").write_text(
+    (data_dir / "historical_daily_2023_2025.csv").write_text(
         "date_utc,sunrise,sunset,daylight_duration\n"
         "2025-01-01 00:00:00,2025-01-01 08:00:00,2025-01-01 16:00:00,28800\n"
     )
 
-    monkeypatch.setattr(data_pipeline.etl, "preprocess_merge", lambda p, w, s: _merged_df())
+    monkeypatch.setattr(data_pipeline, "preprocess_raw_data", lambda *a, **kw: _merged_df())
 
     price, weather, sun = data_pipeline.load_source_data(tmp_path)
-    assert "Timestamp" in price.columns
-    assert "Timestamp" in weather.columns
-    assert "Timestamp" in sun.columns
+    assert "timestamp" in price.columns
+    assert "timestamp_utc" in weather.columns
+    assert "date_utc" in sun.columns
 
     merged = data_pipeline.build_merged_dataset(tmp_path)
     assert merged["Timestamp"].is_monotonic_increasing
 
 
 def test_data_pipeline_missing_files(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="historical_daily_2025.csv"):
+    with pytest.raises(FileNotFoundError, match="price_data_rotated_2d.csv"):
         data_pipeline.load_source_data(tmp_path)
 
     data_dir = tmp_path / "Data"
     data_dir.mkdir()
-    (data_dir / "historical_daily_2025.csv").write_text("date_utc\n2025-01-01\n")
-    with pytest.raises(FileNotFoundError, match="historical_hourly_2025.csv"):
+    (data_dir / "price_data_rotated_2d.csv").write_text("timestamp,Price\n2025-01-01,10\n")
+    with pytest.raises(FileNotFoundError, match="historical_hourly_2023_2025.csv"):
         data_pipeline.load_source_data(tmp_path)
 
-    (data_dir / "historical_hourly_2025.csv").write_text("timestamp_utc\n2025-01-01\n")
-    with pytest.raises(FileNotFoundError, match="price_data.csv"):
+    (data_dir / "historical_hourly_2023_2025.csv").write_text("timestamp_utc\n2025-01-01\n")
+    with pytest.raises(FileNotFoundError, match="historical_daily_2023_2025.csv"):
         data_pipeline.load_source_data(tmp_path)
 
 
@@ -170,12 +176,6 @@ def test_prediction_model_training_wrappers(
     df = _merged_df()
 
     monkeypatch.setattr(pm, "datetime", FixedDateTime)
-
-    class DummyModel(DummyXGBRegressor):
-        def __init__(self):
-            super().__init__()
-            self.feature_importances_ = np.array([0.6, 0.4, 0.2])
-
     monkeypatch.setattr(pm, "train_xgb_regressor", lambda x, y: DummyModel())
 
     run_dir = pm.train_and_save_from_dataframe(tmp_path, df, model_name="xgb_test", test_size=0.25)

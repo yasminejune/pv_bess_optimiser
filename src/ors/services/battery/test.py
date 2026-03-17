@@ -11,10 +11,8 @@ This test suite covers all functions and classes in battery_management.py:
 """
 
 import csv
-import json
 import os
 import tempfile
-from collections.abc import Iterator
 
 import pytest
 
@@ -27,10 +25,6 @@ try:
         clamp,
         compute_losses,
         create_log_entry,
-        load_battery_params,
-        load_battery_params_and_defaults,
-        load_config,
-        load_simulation_defaults,
         step_energy,
         write_simulation_csv,
     )
@@ -42,10 +36,6 @@ except (ImportError, ModuleNotFoundError):
         clamp,
         compute_losses,
         create_log_entry,
-        load_battery_params,
-        load_battery_params_and_defaults,
-        load_config,
-        load_simulation_defaults,
         step_energy,
         write_simulation_csv,
     )
@@ -493,90 +483,6 @@ class TestStepEnergy:
                 params=params,
                 dt_hours=0.0,
             )
-
-
-class TestConfigManagement:
-    """Test configuration management functions."""
-
-    @pytest.fixture
-    def valid_config_file(self) -> Iterator[str]:
-        """Create a temporary valid config file."""
-        config_data = {
-            "battery_params": {
-                "p_rated_mw": 100.0,
-                "eta_ch": 0.97,
-                "eta_dis": 0.97,
-                "a_aux": 0.005,
-                "r_sd_per_hour": 0.0005,
-                "e_duration_hours": 3.0,
-                "e_min_frac": 0.1,
-                "e_max_frac": 0.9,
-            },
-            "simulation_defaults": {"dt_hours": 0.25, "enforce_bounds": True},
-        }
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(config_data, f)
-            temp_path = f.name
-
-        yield temp_path
-
-        # Cleanup
-        os.unlink(temp_path)
-
-    @pytest.fixture
-    def invalid_config_file(self) -> Iterator[str]:
-        """Create a temporary invalid config file."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            f.write("invalid json content {")
-            temp_path = f.name
-
-        yield temp_path
-
-        # Cleanup
-        os.unlink(temp_path)
-
-    def test_load_config_success(self, valid_config_file: str) -> None:
-        """Test successful config loading."""
-        config = load_config(valid_config_file)
-
-        assert "battery_params" in config
-        assert "simulation_defaults" in config
-        assert config["battery_params"]["p_rated_mw"] == 100.0
-        assert config["simulation_defaults"]["dt_hours"] == 0.25
-
-    def test_load_config_file_not_found(self) -> None:
-        """Test error when config file doesn't exist."""
-        with pytest.raises(FileNotFoundError, match="Configuration file not found"):
-            load_config("nonexistent.json")
-
-    def test_load_config_invalid_json(self, invalid_config_file: str) -> None:
-        """Test error when config file contains invalid JSON."""
-        with pytest.raises(ValueError, match="Invalid JSON in config file"):
-            load_config(invalid_config_file)
-
-    def test_load_battery_params_success(self, valid_config_file: str) -> None:
-        """Test successful battery params loading."""
-        params = load_battery_params(valid_config_file)
-
-        assert isinstance(params, BatteryParams)
-        assert params.p_rated_mw == 100.0
-        assert params.eta_ch == 0.97
-
-    def test_load_simulation_defaults_success(self, valid_config_file: str) -> None:
-        """Test successful simulation defaults loading."""
-        defaults = load_simulation_defaults(valid_config_file)
-
-        assert defaults["dt_hours"] == 0.25
-        assert defaults["enforce_bounds"]
-
-    def test_load_battery_params_and_defaults(self, valid_config_file: str) -> None:
-        """Test loading both params and defaults."""
-        params, defaults = load_battery_params_and_defaults(valid_config_file)
-
-        assert isinstance(params, BatteryParams)
-        assert params.p_rated_mw == 100.0
-        assert defaults["dt_hours"] == 0.25
 
 
 class TestCSVLogging:

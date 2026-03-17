@@ -9,18 +9,33 @@ Tests are split into four categories:
 """
 
 import math
+import types
 from pathlib import Path
 
 import pandas as pd
 import pytest
 from pyomo.environ import ConcreteModel, SolverFactory, maximize, value
 from src.ors.services.optimizer.optimizer import (
-    E_MAX,
-    E_MIN,
-    MAX_CYCLES_PER_DAY,
     build_model,
     load_inputs,
 )
+
+# Default battery spec matching example_full_config.json
+_DEFAULT_BATTERY = types.SimpleNamespace(
+    rated_power_mw=50.0,
+    energy_capacity_mwh=200.0,
+    min_soc_percent=10.0,
+    max_soc_percent=90.0,
+    charge_efficiency=0.97,
+    discharge_efficiency=0.97,
+    auxiliary_power_mw=1.0,
+    self_discharge_rate_per_hour=0.0005,
+    max_cycles_per_day=3,
+    current_energy_mwh=None,
+)
+E_MIN: float = _DEFAULT_BATTERY.energy_capacity_mwh * _DEFAULT_BATTERY.min_soc_percent / 100.0
+E_MAX: float = _DEFAULT_BATTERY.energy_capacity_mwh * _DEFAULT_BATTERY.max_soc_percent / 100.0
+MAX_CYCLES_PER_DAY: int = _DEFAULT_BATTERY.max_cycles_per_day
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -56,7 +71,14 @@ def arbitrage_price() -> dict[int, float]:
 @pytest.fixture()
 def built_model(flat_price, zero_solar) -> ConcreteModel:
     """Pre-built model used in structure/rule tests."""
-    return build_model(flat_price, zero_solar, p_30=50.0, cycles_used_today=0, t_boundary=96)
+    return build_model(
+        flat_price,
+        zero_solar,
+        p_30=50.0,
+        cycles_used_today=0,
+        t_boundary=96,
+        battery_spec=_DEFAULT_BATTERY,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +135,14 @@ class TestModelStructure:
     def test_timestep_count_matches_price_length(self, flat_price, zero_solar):
         price_4 = dict.fromkeys(range(1, 5), 50.0)
         solar_4 = dict.fromkeys(range(1, 5), 0.0)
-        m = build_model(price_4, solar_4, p_30=50.0, cycles_used_today=0, t_boundary=4)
+        m = build_model(
+            price_4,
+            solar_4,
+            p_30=50.0,
+            cycles_used_today=0,
+            t_boundary=4,
+            battery_spec=_DEFAULT_BATTERY,
+        )
         assert list(m.T) == [1, 2, 3, 4]
 
     def test_model_has_96_timesteps_for_full_day(self, built_model):
@@ -142,9 +171,6 @@ class TestModelStructure:
             "discharge_limit",
             "energy_bounds",
             "energy_balance",
-            "q_init",
-            "s_dis_init",
-            "cycle_init",
             "q_on",
             "q_off",
             "q_hold",
@@ -173,13 +199,21 @@ class TestModelStructure:
     def test_energy_balance_at_t1_is_equality(self, built_model):
         assert built_model.energy_balance[1].equality
 
-    def test_cycle_init_fixes_cycle_flag_to_zero(self, built_model):
-        assert built_model.cycle_init.equality
-        assert value(built_model.cycle_init.lower) == pytest.approx(0.0)
-
-    def test_q_init_fixes_charge_flag_to_zero(self, built_model):
-        assert built_model.q_init.equality
-        assert value(built_model.q_init.lower) == pytest.approx(0.0)
+    def test_initial_conditions_handled_via_parameters(self, flat_price, zero_solar):
+        """Initial q/s_dis/cycle conditions are passed as build_model parameters, not named constraints."""
+        assert not hasattr(
+            build_model(
+                flat_price,
+                zero_solar,
+                p_30=50.0,
+                cycles_used_today=0,
+                t_boundary=96,
+                battery_spec=_DEFAULT_BATTERY,
+                q_init=0,
+                z_dis_init=0,
+            ),
+            "q_init",
+        ), "q_init should not be a named constraint; initial condition is a parameter"
 
 
 # ---------------------------------------------------------------------------
@@ -211,11 +245,19 @@ class TestConstraintRules:
     def test_energy_balance_includes_t1(self, built_model):
         assert 1 in built_model.energy_balance
 
-    def test_q_hold_skips_t1(self, built_model):
-        assert 1 not in built_model.q_hold
+    def test_q_hold_includes_t1_via_q_init_param(self, built_model):
+        """q_hold now covers t=1 using the q_init parameter instead of skipping it."""
+        assert 1 in built_model.q_hold
 
     def test_solar_balance_rhs_matches_solar_param(self, flat_price, uniform_solar):
-        m = build_model(flat_price, uniform_solar, p_30=50.0, cycles_used_today=0, t_boundary=96)
+        m = build_model(
+            flat_price,
+            uniform_solar,
+            p_30=50.0,
+            cycles_used_today=0,
+            t_boundary=96,
+            battery_spec=_DEFAULT_BATTERY,
+        )
         for t in m.T:
             assert value(m.S[t]) == pytest.approx(10.0)
 
@@ -289,7 +331,7 @@ class TestLoadInputs:
     def test_solar_dict_is_1_indexed_with_96_keys_and_matches_generation_kw(
         self, tmp_path, monkeypatch
     ):
-        df = _make_intraday_df(price=50.0, gen_kw=5.0)
+        df = _make_intraday_df(price=50.0, gen_kw=5000.0)  # 5000 kW → 5.0 MW after /1000
 
         import src.ors.services.optimizer.optimizer as opt_mod
 
@@ -387,7 +429,14 @@ class TestSolverBehaviour:
 
     def test_flat_price_no_grid_charging(self, flat_price, zero_solar, solver):
         m = self._solve(
-            build_model(flat_price, zero_solar, p_30=50.0, cycles_used_today=0, t_boundary=96),
+            build_model(
+                flat_price,
+                zero_solar,
+                p_30=50.0,
+                cycles_used_today=0,
+                t_boundary=96,
+                battery_spec=_DEFAULT_BATTERY,
+            ),
             solver,
         )
         total_grid = sum(value(m.P_grid[t]) for t in m.T)
@@ -396,7 +445,12 @@ class TestSolverBehaviour:
     def test_arbitrage_charges_in_cheap_period(self, arbitrage_price, zero_solar, solver):
         m = self._solve(
             build_model(
-                arbitrage_price, zero_solar, p_30=100.0, cycles_used_today=0, t_boundary=96
+                arbitrage_price,
+                zero_solar,
+                p_30=100.0,
+                cycles_used_today=0,
+                t_boundary=96,
+                battery_spec=_DEFAULT_BATTERY,
             ),
             solver,
         )
@@ -406,7 +460,12 @@ class TestSolverBehaviour:
     def test_arbitrage_discharges_in_expensive_period(self, arbitrage_price, zero_solar, solver):
         m = self._solve(
             build_model(
-                arbitrage_price, zero_solar, p_30=100.0, cycles_used_today=0, t_boundary=96
+                arbitrage_price,
+                zero_solar,
+                p_30=100.0,
+                cycles_used_today=0,
+                t_boundary=96,
+                battery_spec=_DEFAULT_BATTERY,
             ),
             solver,
         )
@@ -416,7 +475,12 @@ class TestSolverBehaviour:
     def test_cycle_limit_not_exceeded(self, arbitrage_price, zero_solar, solver):
         m = self._solve(
             build_model(
-                arbitrage_price, zero_solar, p_30=100.0, cycles_used_today=0, t_boundary=96
+                arbitrage_price,
+                zero_solar,
+                p_30=100.0,
+                cycles_used_today=0,
+                t_boundary=96,
+                battery_spec=_DEFAULT_BATTERY,
             ),
             solver,
         )
@@ -426,7 +490,12 @@ class TestSolverBehaviour:
     def test_energy_stays_within_bounds(self, arbitrage_price, zero_solar, solver):
         m = self._solve(
             build_model(
-                arbitrage_price, zero_solar, p_30=100.0, cycles_used_today=0, t_boundary=96
+                arbitrage_price,
+                zero_solar,
+                p_30=100.0,
+                cycles_used_today=0,
+                t_boundary=96,
+                battery_spec=_DEFAULT_BATTERY,
             ),
             solver,
         )
@@ -437,7 +506,12 @@ class TestSolverBehaviour:
     def test_mode_exclusivity_holds_in_solution(self, arbitrage_price, zero_solar, solver):
         m = self._solve(
             build_model(
-                arbitrage_price, zero_solar, p_30=100.0, cycles_used_today=0, t_boundary=96
+                arbitrage_price,
+                zero_solar,
+                p_30=100.0,
+                cycles_used_today=0,
+                t_boundary=96,
+                battery_spec=_DEFAULT_BATTERY,
             ),
             solver,
         )
@@ -449,7 +523,14 @@ class TestSolverBehaviour:
 
     def test_solar_balance_holds_in_solution(self, flat_price, uniform_solar, solver):
         m = self._solve(
-            build_model(flat_price, uniform_solar, p_30=50.0, cycles_used_today=0, t_boundary=96),
+            build_model(
+                flat_price,
+                uniform_solar,
+                p_30=50.0,
+                cycles_used_today=0,
+                t_boundary=96,
+                battery_spec=_DEFAULT_BATTERY,
+            ),
             solver,
         )
         for t in m.T:
@@ -460,7 +541,14 @@ class TestSolverBehaviour:
 
     def test_high_terminal_value_prevents_discharge(self, flat_price, zero_solar, solver):
         m = self._solve(
-            build_model(flat_price, zero_solar, p_30=500.0, cycles_used_today=0, t_boundary=96),
+            build_model(
+                flat_price,
+                zero_solar,
+                p_30=500.0,
+                cycles_used_today=0,
+                t_boundary=96,
+                battery_spec=_DEFAULT_BATTERY,
+            ),
             solver,
         )
         total_dis = sum(value(m.P_dis[t]) for t in m.T)
@@ -480,7 +568,14 @@ class TestSolverBehaviour:
         solar = {t: (0.0 if not math.isfinite(v) else float(v)) for t, v in solar.items()}
 
         m = self._solve(
-            build_model(price, solar, p_30, cycles_used_today=0, t_boundary=96),
+            build_model(
+                price,
+                solar,
+                p_30,
+                cycles_used_today=0,
+                t_boundary=96,
+                battery_spec=_DEFAULT_BATTERY,
+            ),
             solver,
         )
 

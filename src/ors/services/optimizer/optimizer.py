@@ -12,19 +12,28 @@ from pyomo.environ import (
     Objective,
     Param,
     RangeSet,
-    SolverFactory,
     Var,
     maximize,
-    value,
 )
 
 if TYPE_CHECKING:
     from src.ors.domain.models.battery import BatterySpec
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "battery_to_optimization"))
-from battery_inference import (
-    load_optimizer_battery_config,
-)
+
+
+def create_input_df(**_kwargs) -> pd.DataFrame:
+    """Build the intraday input DataFrame for the optimizer.
+
+    Injected at runtime by the pipeline (e.g. via monkeypatch in tests or
+    replaced by the live data loader).  Raises ``NotImplementedError`` if
+    called without being replaced.
+    """
+    raise NotImplementedError(  # pragma: no cover
+        "create_input_df must be replaced before calling load_inputs. "
+        "Use monkeypatch in tests or inject via the pipeline."
+    )
+
 
 # -----------------------------
 # CONFIG
@@ -43,58 +52,6 @@ INPUT_CSV = os.path.join(
 )  # columns: timestamp, price_intraday, solar_MW
 OUTPUT_CSV = "tests/data/optimizer/bess_solution_v2_15min_1day.csv"
 BATTERY_STEP_CSV = "src/ors/services/battery_to_optimization/battery_storage.csv"
-
-# Load battery configuration from battery module
-# Module-level configuration loading - prints moved to runtime context
-_battery_config_loaded = False
-_load_error = None
-
-try:
-    battery_params, sim_defaults = load_optimizer_battery_config()
-    _battery_config_loaded = True
-except Exception as e:
-    _load_error = e
-    # Fallback to original hardcoded values
-    class MockBatteryParams:
-        p_rated_mw = 100.0
-        eta_ch = 0.97
-        eta_dis = 0.97
-        e_cap_mwh = 600.0
-        e_min_mwh = 60.0
-        e_max_mwh = 540.0
-        p_aux_mw = 0.5
-        r_sd_per_hour = 0.0005
-
-    battery_params = MockBatteryParams()
-    sim_defaults = {"dt_hours": 0.25, "enforce_bounds": True}
-
-# Extract parameters from battery config
-DT = sim_defaults["dt_hours"]  # 15 minutes in hours
-N_D = 24 / DT  # 96 periods in a day
-
-# Power limits
-P_CH_MAX = battery_params.p_rated_mw  # MW
-P_DIS_MAX = battery_params.p_rated_mw  # MW
-P_RATED = battery_params.p_rated_mw  # MW
-
-# Efficiencies
-ETA_CH = battery_params.eta_ch
-ETA_DIS = battery_params.eta_dis
-ETA_SOL_SELL = 0.97  # losses when selling solar directly
-
-# Losses (from battery params)
-P_AUX = battery_params.p_aux_mw  # MW
-R_SD = battery_params.r_sd_per_hour  # per hour
-
-# Energy capacity and bounds
-E_CAP = battery_params.e_cap_mwh  # MWh
-E_MIN = battery_params.e_min_mwh  # MWh
-E_MAX = battery_params.e_max_mwh  # MWh
-# E0 is the initial energy state - can be overridden by backtesting or other callers
-E0 = E_CAP * 0.5  # Default to 50% SOC
-E_TERMINAL_MIN = E_CAP * 0.4  # 40% minimum terminal SOC
-
-MAX_CYCLES_PER_DAY = 3
 
 # Start optimization
 START = "00:00"
@@ -122,22 +79,22 @@ def get_cycles_used_today(battery_logs: list[dict] | None = None) -> int:
 
 def extract_optimizer_initial_state(
     battery_state: None = None,  # Will be BatteryState when imported
+    e_cap_mwh: float = 0.0,
 ) -> tuple[float, str, int]:
     """Extract initial state parameters for optimizer from BatteryState.
 
     Args:
         battery_state (None): Current battery state from battery status service.
                       If None, uses default (50% SOC, idle, 0 cycles).
+        e_cap_mwh (float): Energy capacity in MWh, used to compute 50% SOC default.
 
     Returns:
         tuple[float, str, int]: Tuple of (initial_energy_mwh, initial_mode, cycles_used_today)
     """
     if battery_state is None:
-        # Default fallback when no battery state available
-        return E_CAP * 0.5, "idle", 0
+        return e_cap_mwh * 0.5, "idle", 0
 
-    # Extract from battery state (fields would match BatteryState model)
-    initial_energy_mwh = getattr(battery_state, "energy_mwh", E_CAP * 0.5)
+    initial_energy_mwh = getattr(battery_state, "energy_mwh", e_cap_mwh * 0.5)
     initial_mode = getattr(battery_state, "operating_mode", "idle")
 
     # Note: cycles_used_today would need to come from separate source
@@ -170,13 +127,13 @@ def load_inputs(
         tuple[dict[int, float], dict[int, float], float, int, int, pd.DataFrame]: Tuple of (price, solar, p_30, cycles_used_today, t_boundary, df)
     """
     df = create_input_df(**kwargs).copy()
-    df["generation_kw"] = df["generation_kw"]/1000
+    df["generation_kw"] = df["generation_kw"] / 1000  # kW → MW (column stays named generation_kw)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     n_t = len(df)
     assert n_t == 96, f"Expected 96 timesteps for 1 day at 15-min. Got {n_t}."
 
     price = {i + 1: float(df.loc[i, "price_intraday"]) for i in range(n_t)}
-    solar = {i + 1: float(df.loc[i, "solar_MW"]) for i in range(n_t)}
+    solar = {i + 1: float(df.loc[i, "generation_kw"]) for i in range(n_t)}
 
     df_hist_price = pd.read_csv(historic_csv)
     df_hist_price["timestamp"] = pd.to_datetime(df_hist_price["timestamp"], utc=True)
@@ -236,61 +193,44 @@ def build_model(
         z_dis_init (int): Whether discharge was active in the step immediately *before* period 1.
             Used to detect a start-of-discharge event at t=1.
         verbose (bool): Enable verbose output for debugging
-        battery_spec (BatterySpec | None): Battery specification to use for optimization.
-            If provided, takes precedence over internal battery config.
+        battery_spec (BatterySpec): Battery specification from the optimization config template.
         time_step_hours (float | None): Time step duration in hours.
-            If provided, takes precedence over internal config.
+            If provided, takes precedence over optimization config value.
 
     Returns:
         ConcreteModel: Configured Pyomo optimization model
+
+    Raises:
+        ValueError: If battery_spec is not provided.
     """
-    
-    # Determine battery parameters source
-    if battery_spec is not None:
-        # Use provided battery specification (main config)
-        p_ch_max = battery_spec.rated_power_mw
-        p_dis_max = battery_spec.rated_power_mw
-        eta_ch = battery_spec.charge_efficiency
-        eta_dis = battery_spec.discharge_efficiency
-        e_cap = battery_spec.energy_capacity_mwh
-        e_min = battery_spec.energy_capacity_mwh * battery_spec.min_soc_percent / 100.0
-        e_max = battery_spec.energy_capacity_mwh * battery_spec.max_soc_percent / 100.0
-        p_aux = battery_spec.auxiliary_power_mw
-        r_sd = battery_spec.self_discharge_rate_per_hour
-        
-        # Use provided time step or default
-        dt = time_step_hours if time_step_hours is not None else 0.25  # 15 minutes default
-        
-        if verbose:
-            print(f"Info: Using provided battery config: {p_ch_max} MW / {e_cap} MWh")
-    else:
-        # Fall back to internal battery config for backward compatibility
-        global _battery_config_loaded, _load_error
-        if not _battery_config_loaded and _load_error:
-            if verbose:
-                print(f"Warning: Could not load battery config: {_load_error}")
-                print("Info: Using default parameters...")
-        elif _battery_config_loaded and verbose:
-            print(f"Info: Using internal battery config: {battery_params.p_rated_mw} MW / {battery_params.e_cap_mwh} MWh")
-        
-        # Use global variables
-        p_ch_max = P_CH_MAX
-        p_dis_max = P_DIS_MAX
-        eta_ch = ETA_CH
-        eta_dis = ETA_DIS
-        e_cap = E_CAP
-        e_min = E_MIN
-        e_max = E_MAX
-        p_aux = P_AUX
-        r_sd = R_SD
-        dt = time_step_hours if time_step_hours is not None else DT
-    
+    if battery_spec is None:
+        raise ValueError("battery_spec is required. Load it from the optimization config template.")
+
+    p_ch_max = battery_spec.rated_power_mw
+    p_dis_max = battery_spec.rated_power_mw
+    eta_ch = battery_spec.charge_efficiency
+    eta_dis = battery_spec.discharge_efficiency
+    e_cap = battery_spec.energy_capacity_mwh
+    e_min = battery_spec.energy_capacity_mwh * battery_spec.min_soc_percent / 100.0
+    e_max = battery_spec.energy_capacity_mwh * battery_spec.max_soc_percent / 100.0
+    p_aux = battery_spec.auxiliary_power_mw
+    r_sd = battery_spec.self_discharge_rate_per_hour
+    max_cycles_per_day = battery_spec.max_cycles_per_day
+    dt = time_step_hours if time_step_hours is not None else 0.25
+
+    if verbose:
+        print(f"Info: Using battery config: {p_ch_max} MW / {e_cap} MWh")
+
     n_t = len(price)
     m = ConcreteModel()
     m.T = RangeSet(1, n_t)
 
-    # Set initial energy state from module-level E0 variable
-    e0 = E0
+    # Initial energy: use configured current state, or default to 50% SOC
+    e0 = (
+        battery_spec.current_energy_mwh
+        if battery_spec.current_energy_mwh is not None
+        else e_cap * 0.5
+    )
 
     # Validate initial state bounds
     if e0 < e_min or e0 > e_max:
@@ -388,9 +328,9 @@ def build_model(
     # q_t turns on with charging, stays on through idle, turns off when discharging
     # A cycle is counted when a discharge segment starts AND q_{t-1}=1
     # -----------------------------
-    #m.q_init = Constraint(expr=m.q[1] == 0)
-    #m.s_dis_init = Constraint(expr=m.s_dis[1] == 0)
-    #m.cycle_init = Constraint(expr=m.cycle[1] == 0)
+    # m.q_init = Constraint(expr=m.q[1] == 0)
+    # m.s_dis_init = Constraint(expr=m.s_dis[1] == 0)
+    # m.cycle_init = Constraint(expr=m.cycle[1] == 0)
 
     # q_t >= c_t (charging turns flag ON)
     def q_on_rule(m, t):
@@ -449,7 +389,7 @@ def build_model(
         n_d = 24 / dt  # periods in a day based on actual time step
         window_start = max(1, t - (n_d - 1))  # periods back (inclusive of t)
         cycles_in_optimization = sum(m.cycle[k] for k in range(window_start, t + 1))
-        return cycles_in_optimization <= MAX_CYCLES_PER_DAY - cycles_used_today
+        return cycles_in_optimization <= max_cycles_per_day - cycles_used_today
 
     m.daily_cycles = Constraint(m.T, rule=daily_cycles_rule)
 
@@ -478,73 +418,3 @@ def build_model(
     )
 
     return m
-
-
-if __name__ == "__main__":
-    # Load price and solar data
-    price, solar, p_30 = load_inputs(INPUT_CSV, "dummy.csv")
-
-    # Extract current battery state (in real usage, this would come from battery_status service)
-    # For demonstration, show both default and custom initial state
-    print("Info: Battery State Options:")
-    print("  1. Default state (50% SOC, idle, 0 cycles)")
-    print("  2. Custom state (for demonstration)")
-
-    # Option 1: Default state (current behavior maintained)
-    print("\nInfo: Using default battery state...")
-    initial_energy_mwh, initial_mode, cycles_used_today = extract_optimizer_initial_state(None)
-    print(
-        f"  Initial energy: {initial_energy_mwh:.1f} MWh ({initial_energy_mwh/E_CAP*100:.1f}% SOC)"
-    )
-    print(f"  Initial mode: {initial_mode}")
-    print(f"  Cycles used today: {cycles_used_today}")
-
-    m = build_model(
-        price,
-        solar,
-        p_30,
-        initial_energy_mwh=initial_energy_mwh,
-        initial_mode=initial_mode,
-        cycles_used_today=cycles_used_today,
-    )
-
-    # -----------------------------
-    # SOLVE
-    # -----------------------------
-    solver = SolverFactory("highs")
-    res = solver.solve(m, tee=True)  # tee=True shows progress
-
-    df = pd.read_csv(INPUT_CSV)
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-
-    # -----------------------------
-    # EXPORT RESULTS
-    # -----------------------------
-    out = df.copy()
-
-    out["P_grid_MW"] = [value(m.P_grid[t]) for t in m.T]
-    out["P_dis_MW"] = [value(m.P_dis[t]) for t in m.T]
-    out["P_sol_bat_MW"] = [value(m.P_sol_bat[t]) for t in m.T]
-    out["P_sol_sell_MW"] = [value(m.P_sol_sell[t]) for t in m.T]
-    out["E_MWh"] = [value(m.E[t]) for t in m.T]
-
-    out["z_grid"] = [int(round(value(m.z_grid[t]))) for t in m.T]
-    out["z_solbat"] = [int(round(value(m.z_solbat[t]))) for t in m.T]
-    out["z_dis"] = [int(round(value(m.z_dis[t]))) for t in m.T]
-
-    out["q_flag"] = [int(round(value(m.q[t]))) for t in m.T]
-    out["s_dis"] = [int(round(value(m.s_dis[t]))) for t in m.T]
-    out["cycle"] = [int(round(value(m.cycle[t]))) for t in m.T]
-
-    # Profit per step (with Δt scaling to reflect energy over interval)
-    out["profit_step"] = (
-        out["price_intraday"]
-        * (out["P_dis_MW"] + ETA_SOL_SELL * out["P_sol_sell_MW"] - out["P_grid_MW"])
-        * DT
-    )
-
-    # Save results and display summary
-    out.to_csv(OUTPUT_CSV, index=False)
-    print(f"Success: Results saved to {OUTPUT_CSV}")
-    print(f"Info: Total profit: €{out['profit_step'].sum():.2f}")
-    print(f"Info: Cycles used: {int(out['cycle'].sum())}")

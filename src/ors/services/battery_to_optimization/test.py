@@ -13,32 +13,32 @@ Following the same testing patterns as battery_management tests.
 
 import json
 import tempfile
-from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
 
 import pandas as pd
 import pytest
+
+from ors.config.optimization_config import BatteryConfiguration
 
 # Import handling for both mypy (relative) and direct execution (absolute)
 try:
     # When run from project root with mypy or as a module
     from .battery_inference import (
+        battery_spec_to_params,
         create_enhanced_optimizer_output,
         create_optimizer_log_entries,
         export_optimizer_results,
-        load_optimizer_battery_config,
         validate_optimizer_energy_balance,
         write_step_by_step_battery_log,
     )
 except (ImportError, ModuleNotFoundError):
     # When run directly from this directory
     from battery_inference import (  # type: ignore[import-not-found,no-redef]
+        battery_spec_to_params,
         create_enhanced_optimizer_output,
         create_optimizer_log_entries,
         export_optimizer_results,
-        load_optimizer_battery_config,
         validate_optimizer_energy_balance,
         write_step_by_step_battery_log,
     )
@@ -52,79 +52,66 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", "battery"))
 from battery_management import BatteryParams  # type: ignore[import-not-found]
 
 
-class TestLoadOptimizerBatteryConfig:
-    """Test load_optimizer_battery_config function."""
+class TestBatterySpecToParams:
+    """Test battery_spec_to_params adapter function."""
 
     @pytest.fixture
-    def valid_battery_config_file(self) -> Iterator[str]:
-        """Create a temporary valid battery config file."""
-        config_data = {
-            "battery_params": {
-                "p_rated_mw": 100.0,
-                "eta_ch": 0.97,
-                "eta_dis": 0.97,
-                "a_aux": 0.005,
-                "r_sd_per_hour": 0.0005,
-                "e_duration_hours": 3.0,
-                "e_min_frac": 0.10,
-                "e_max_frac": 0.90,
-            },
-            "simulation_defaults": {"dt_hours": 0.25, "enforce_bounds": True},
-        }
+    def sample_battery_config(self) -> BatteryConfiguration:
+        """Create a sample BatteryConfiguration matching the template format."""
+        return BatteryConfiguration(
+            rated_power_mw=50.0,
+            energy_capacity_mwh=200.0,
+            min_soc_percent=10.0,
+            max_soc_percent=90.0,
+            max_cycles_per_day=2,
+            charge_efficiency=0.97,
+            discharge_efficiency=0.97,
+            auxiliary_power_mw=0.3,
+            self_discharge_rate_per_hour=0.0005,
+        )
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(config_data, f)
-            config_path = f.name
+    def test_conversion_rated_power(self, sample_battery_config: BatteryConfiguration) -> None:
+        """Test that rated_power_mw maps to p_rated_mw."""
+        params = battery_spec_to_params(sample_battery_config)
+        assert params.p_rated_mw == 50.0
 
-        yield config_path
-
-        # Cleanup
-        os.unlink(config_path)
-
-    def test_load_config_success(self, valid_battery_config_file: str) -> None:
-        """Test successful config loading with explicit path."""
-        params, defaults = load_optimizer_battery_config(valid_battery_config_file)
-
-        assert isinstance(params, BatteryParams)
-        assert params.p_rated_mw == 100.0
+    def test_conversion_efficiencies(self, sample_battery_config: BatteryConfiguration) -> None:
+        """Test that charge/discharge efficiencies map correctly."""
+        params = battery_spec_to_params(sample_battery_config)
         assert params.eta_ch == 0.97
-        assert defaults["dt_hours"] == 0.25
-        assert defaults["enforce_bounds"] is True
+        assert params.eta_dis == 0.97
 
-    def test_load_config_with_none_path(self) -> None:
-        """Test config loading with None path (should use default)."""
-        with patch("battery_inference.load_battery_params_and_defaults") as mock_load:
-            mock_params = BatteryParams(p_rated_mw=200.0)
-            mock_defaults = {"dt_hours": 0.25}
-            mock_load.return_value = (mock_params, mock_defaults)
+    def test_conversion_aux_power_as_fraction(
+        self, sample_battery_config: BatteryConfiguration
+    ) -> None:
+        """Test that auxiliary_power_mw is converted to fraction of rated power."""
+        params = battery_spec_to_params(sample_battery_config)
+        assert params.a_aux == pytest.approx(0.3 / 50.0)
+        assert params.p_aux_mw == pytest.approx(0.3)
 
-            params, defaults = load_optimizer_battery_config(None)
+    def test_conversion_energy_duration(self, sample_battery_config: BatteryConfiguration) -> None:
+        """Test that energy_capacity_mwh is converted to duration hours."""
+        params = battery_spec_to_params(sample_battery_config)
+        assert params.e_duration_hours == pytest.approx(200.0 / 50.0)
+        assert params.e_cap_mwh == pytest.approx(200.0)
 
-            assert params.p_rated_mw == 200.0
-            assert defaults["dt_hours"] == 0.25
+    def test_conversion_soc_as_fractions(self, sample_battery_config: BatteryConfiguration) -> None:
+        """Test that SOC percentages are converted to fractions."""
+        params = battery_spec_to_params(sample_battery_config)
+        assert params.e_min_frac == pytest.approx(0.10)
+        assert params.e_max_frac == pytest.approx(0.90)
 
-            # Verify default path was constructed (should be a string ending with 'battery_config.json')
-            mock_load.assert_called_once()
-            call_args = mock_load.call_args[0][0]  # Get first positional argument
-            assert isinstance(call_args, str)
-            assert call_args.endswith("battery/battery_config.json")
+    def test_conversion_self_discharge(self, sample_battery_config: BatteryConfiguration) -> None:
+        """Test that self_discharge_rate_per_hour maps directly."""
+        params = battery_spec_to_params(sample_battery_config)
+        assert params.r_sd_per_hour == 0.0005
 
-    def test_load_config_file_not_found(self) -> None:
-        """Test error when config file doesn't exist."""
-        with pytest.raises(FileNotFoundError):
-            load_optimizer_battery_config("/nonexistent/config.json")
-
-    def test_load_config_invalid_json(self) -> None:
-        """Test error when config file contains invalid JSON."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            f.write("invalid json content {")
-            invalid_config_path = f.name
-
-        try:
-            with pytest.raises(ValueError, match="Invalid JSON"):
-                load_optimizer_battery_config(invalid_config_path)
-        finally:
-            os.unlink(invalid_config_path)
+    def test_returns_battery_params_instance(
+        self, sample_battery_config: BatteryConfiguration
+    ) -> None:
+        """Test that result is a BatteryParams instance."""
+        params = battery_spec_to_params(sample_battery_config)
+        assert isinstance(params, BatteryParams)
 
 
 class TestCreateOptimizerLogEntries:
@@ -431,30 +418,6 @@ class TestExportOptimizerResults:
             if Path(csv_path).exists():
                 os.unlink(csv_path)
 
-    def test_export_with_none_params(self, sample_results_for_export: pd.DataFrame) -> None:
-        """Test export when params is None (should load from config)."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
-            csv_path = f.name
-
-        with patch("battery_inference.load_optimizer_battery_config") as mock_load:
-            mock_params = BatteryParams(p_rated_mw=150.0)
-            mock_defaults = {"dt_hours": 0.25}
-            mock_load.return_value = (mock_params, mock_defaults)
-
-            try:
-                export_optimizer_results(
-                    df_results=sample_results_for_export,
-                    csv_path=csv_path,
-                    params=None,  # Should trigger config loading
-                )
-
-                mock_load.assert_called_once()
-                assert Path(csv_path).exists()
-
-            finally:
-                if Path(csv_path).exists():
-                    os.unlink(csv_path)
-
 
 class TestCreateEnhancedOptimizerOutput:
     """Test create_enhanced_optimizer_output function."""
@@ -752,42 +715,33 @@ class TestIntegration:
             }
         )
 
-        # Create config file
-        config_data = {
-            "battery_params": {
-                "p_rated_mw": 100.0,
-                "eta_ch": 0.97,
-                "eta_dis": 0.97,
-                "a_aux": 0.005,
-                "r_sd_per_hour": 0.0005,
-                "e_duration_hours": 3.0,
-                "e_min_frac": 0.10,
-                "e_max_frac": 0.90,
-            },
-            "simulation_defaults": {"dt_hours": 0.25, "enforce_bounds": True},
-        }
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as config_f:
-            json.dump(config_data, config_f)
-            config_path = config_f.name
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as csv_f:
             csv_path = csv_f.name
 
         try:
-            # 1. Load configuration
-            params, defaults = load_optimizer_battery_config(config_path)
+            # 1. Build params from BatteryConfiguration (replaces load_optimizer_battery_config)
+            battery_config = BatteryConfiguration(
+                rated_power_mw=100.0,
+                energy_capacity_mwh=300.0,  # 100 MW * 3 h = 300 MWh
+                min_soc_percent=10.0,
+                max_soc_percent=90.0,
+                charge_efficiency=0.97,
+                discharge_efficiency=0.97,
+                auxiliary_power_mw=0.5,
+                self_discharge_rate_per_hour=0.0005,
+            )
+            params = battery_spec_to_params(battery_config)
             assert params.p_rated_mw == 100.0
 
             # 2. Create logs
             logs = create_optimizer_log_entries(
-                df_results=optimizer_results, params=params, dt_hours=defaults["dt_hours"]
+                df_results=optimizer_results, params=params, dt_hours=0.25
             )
             assert len(logs) == 3
 
             # 3. Validate energy balance
             validation = validate_optimizer_energy_balance(
-                df_results=optimizer_results, params=params, dt_hours=defaults["dt_hours"]
+                df_results=optimizer_results, params=params, dt_hours=0.25
             )
             # Note: May not be perfectly valid since we created artificial data
             assert "is_valid" in validation
@@ -810,9 +764,8 @@ class TestIntegration:
             assert "loss_total_mwh" in df_read.columns
 
         finally:
-            for path in [config_path, csv_path]:
-                if Path(path).exists():
-                    os.unlink(path)
+            if Path(csv_path).exists():
+                os.unlink(csv_path)
 
 
 if __name__ == "__main__":

@@ -146,9 +146,7 @@ class TestComputeP30:
         """DataFrame with `early_price` in the H_30 morning window, 120 elsewhere."""
         start = base_dt - timedelta(days=n_days)
         ts = pd.date_range(start, periods=n_days * N_D, freq="15min", tz="UTC")
-        prices = [
-            early_price if (t.hour + t.minute / 60.0) < H_30 else 120.0 for t in ts
-        ]
+        prices = [early_price if (t.hour + t.minute / 60.0) < H_30 else 120.0 for t in ts]
         return pd.DataFrame({"timestamp": ts, "price": prices})
 
     def test_returns_float(self):
@@ -382,8 +380,8 @@ class TestStepProfit:
 
 class TestRunSingleOptimize:
     def _make_inputs(self):
-        price = {i: 100.0 for i in range(1, N_D + 1)}
-        solar = {i: 0.0 for i in range(1, N_D + 1)}
+        price = dict.fromkeys(range(1, N_D + 1), 100.0)
+        solar = dict.fromkeys(range(1, N_D + 1), 0.0)
         return price, solar
 
     def test_returns_none_model_on_infeasible_status(self):
@@ -395,8 +393,13 @@ class TestRunSingleOptimize:
         price, solar = self._make_inputs()
 
         m, info = run_single_optimize(
-            mock_solver, price, solar, p_30=80.0,
-            cycles_used_today=0, t_boundary=96, e0=E_CAP * 0.5,
+            mock_solver,
+            price,
+            solar,
+            p_30=80.0,
+            cycles_used_today=0,
+            t_boundary=96,
+            e0=E_CAP * 0.5,
         )
 
         assert m is None
@@ -411,32 +414,37 @@ class TestRunSingleOptimize:
         price, solar = self._make_inputs()
 
         _, info = run_single_optimize(
-            mock_solver, price, solar, p_30=80.0,
-            cycles_used_today=0, t_boundary=96, e0=E_CAP * 0.5,
+            mock_solver,
+            price,
+            solar,
+            p_30=80.0,
+            cycles_used_today=0,
+            t_boundary=96,
+            e0=E_CAP * 0.5,
         )
 
         assert "solver_status" in info
         assert "termination_condition" in info
         assert "error" in info
 
-    def test_e0_patch_is_restored_after_call(self):
-        """E0 in the optimizer module must be restored regardless of solver outcome."""
-        import ors.services.optimizer.optimizer as opt_mod
-
-        original_e0 = opt_mod.E0
+    def test_solver_crash_returns_none_with_error_info(self):
+        """run_single_optimize must return (None, info) with error details when the solver crashes."""
         mock_solver = MagicMock()
         mock_solver.solve.side_effect = RuntimeError("crash during solve")
         price, solar = self._make_inputs()
 
-        try:
-            run_single_optimize(
-                mock_solver, price, solar, p_30=80.0,
-                cycles_used_today=0, t_boundary=96, e0=E_CAP * 0.5,
-            )
-        except Exception:
-            pass
+        m, info = run_single_optimize(
+            mock_solver,
+            price,
+            solar,
+            p_30=80.0,
+            cycles_used_today=0,
+            t_boundary=96,
+            e0=E_CAP * 0.5,
+        )
 
-        assert opt_mod.E0 == pytest.approx(original_e0)
+        assert m is None
+        assert info["error"] != ""
 
     def test_exception_in_solver_returns_none(self):
         mock_solver = MagicMock()
@@ -444,8 +452,13 @@ class TestRunSingleOptimize:
         price, solar = self._make_inputs()
 
         m, info = run_single_optimize(
-            mock_solver, price, solar, p_30=80.0,
-            cycles_used_today=0, t_boundary=96, e0=E_CAP * 0.5,
+            mock_solver,
+            price,
+            solar,
+            p_30=80.0,
+            cycles_used_today=0,
+            t_boundary=96,
+            e0=E_CAP * 0.5,
         )
 
         assert m is None
@@ -486,7 +499,14 @@ class TestDailySummary:
     def test_required_columns_present(self):
         df = _make_results_df(n_days=1)
         summary = daily_summary(df)
-        for col in ["Date", "profit_GBP", "n_cycles", "avg_price_GBP_MWh", "min_SOC_MWh", "max_SOC_MWh"]:
+        for col in [
+            "Date",
+            "profit_GBP",
+            "n_cycles",
+            "avg_price_GBP_MWh",
+            "min_SOC_MWh",
+            "max_SOC_MWh",
+        ]:
             assert col in summary.columns
 
     def test_daily_profit_sums_step_profits(self):
@@ -533,8 +553,18 @@ class TestRunBacktest:
         with patch.object(bt, "run_single_optimize", side_effect=_idle_optimizer):
             result = run_backtest(df, start_dt, n_sim_days=1, commit_periods=16, solver=None)
         expected_cols = {
-            "timestamp", "price", "P_grid_MW", "P_dis_MW", "P_sol_bat_MW",
-            "P_sol_sell_MW", "z_grid", "z_solbat", "z_dis", "cycle", "E_MWh", "profit_step",
+            "timestamp",
+            "price",
+            "P_grid_MW",
+            "P_dis_MW",
+            "P_sol_bat_MW",
+            "P_sol_sell_MW",
+            "z_grid",
+            "z_solbat",
+            "z_dis",
+            "cycle",
+            "E_MWh",
+            "profit_step",
         }
         assert expected_cols.issubset(set(result.columns))
 
@@ -594,26 +624,36 @@ class TestRunBacktest:
     def test_price_source_perfect_does_not_call_prediction(self):
         df = self._minimal_df()
         start_dt = df["timestamp"].iloc[0].to_pydatetime()
-        with patch.object(bt, "run_single_optimize", side_effect=_idle_optimizer):
-            with patch.object(bt, "build_predicted_price_dict") as mock_pred:
-                run_backtest(
-                    df, start_dt, n_sim_days=1, commit_periods=16,
-                    solver=None, price_source="perfect",
-                )
+        with (
+            patch.object(bt, "run_single_optimize", side_effect=_idle_optimizer),
+            patch.object(bt, "build_predicted_price_dict") as mock_pred,
+        ):
+            run_backtest(
+                df,
+                start_dt,
+                n_sim_days=1,
+                commit_periods=16,
+                solver=None,
+                price_source="perfect",
+            )
         mock_pred.assert_not_called()
 
     def test_price_source_predicted_calls_prediction_at_each_replan(self):
         df = self._minimal_df()
         start_dt = df["timestamp"].iloc[0].to_pydatetime()
-        dummy_prices = {i: 100.0 for i in range(1, N_D + 1)}
-        with patch.object(bt, "run_single_optimize", side_effect=_idle_optimizer):
-            with patch.object(
-                bt, "build_predicted_price_dict", return_value=dummy_prices
-            ) as mock_pred:
-                run_backtest(
-                    df, start_dt, n_sim_days=1, commit_periods=16,
-                    solver=None, price_source="predicted",
-                )
+        dummy_prices = dict.fromkeys(range(1, N_D + 1), 100.0)
+        with (
+            patch.object(bt, "run_single_optimize", side_effect=_idle_optimizer),
+            patch.object(bt, "build_predicted_price_dict", return_value=dummy_prices) as mock_pred,
+        ):
+            run_backtest(
+                df,
+                start_dt,
+                n_sim_days=1,
+                commit_periods=16,
+                solver=None,
+                price_source="predicted",
+            )
         # 6 replans → 6 prediction calls
         assert mock_pred.call_count == 6
 
@@ -643,8 +683,12 @@ class TestRunBacktest:
         trace: list[dict] = []
         with patch.object(bt, "run_single_optimize", side_effect=_idle_optimizer):
             run_backtest(
-                df, start_dt, n_sim_days=1, commit_periods=16,
-                solver=None, trace_records=trace,
+                df,
+                start_dt,
+                n_sim_days=1,
+                commit_periods=16,
+                solver=None,
+                trace_records=trace,
             )
         assert len(trace) == N_D
         assert "step" in trace[0]
@@ -656,8 +700,12 @@ class TestRunBacktest:
         trace_path = str(tmp_path / "trace.csv")
         with patch.object(bt, "run_single_optimize", side_effect=_idle_optimizer):
             run_backtest(
-                df, start_dt, n_sim_days=1, commit_periods=16,
-                solver=None, trace_output_path=trace_path,
+                df,
+                start_dt,
+                n_sim_days=1,
+                commit_periods=16,
+                solver=None,
+                trace_output_path=trace_path,
             )
         trace_df = pd.read_csv(trace_path)
         assert len(trace_df) == N_D

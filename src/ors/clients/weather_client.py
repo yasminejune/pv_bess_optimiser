@@ -112,14 +112,29 @@ def _solar_radiance_15_mins_from_archive(
     ts_15 = pd.date_range(start=start_datetime, end=end_datetime, freq="15min", tz="UTC")
     s_15 = s_hourly.reindex(s_hourly.index.union(ts_15)).sort_index().interpolate(method="time")
     s_15 = s_15.reindex(ts_15)
-    s_15 = s_15.ffill().bfill().fillna(0.0).clip(lower=0.0)
 
-    return pd.DataFrame(
+    # Mask leading/trailing slots that lie outside the range of known data — pandas
+    # time interpolation extrapolates forward beyond the last known value by default.
+    first_valid = s_hourly.first_valid_index()
+    last_valid = s_hourly.last_valid_index()
+    if first_valid is not None:
+        s_15.loc[s_15.index < first_valid] = float("nan")
+    if last_valid is not None:
+        s_15.loc[s_15.index > last_valid] = float("nan")
+
+    if pd.isna(s_15.iloc[0]):
+        raise WeatherFetcherError(
+            f"No archive data available at start_datetime ({start_datetime}). "
+            "The requested time may be too far in the future."
+        )
+
+    df_out = pd.DataFrame(
         {
             "timestamp_utc": ts_15,
-            "shortwave_radiation": s_15.to_numpy(),
+            "shortwave_radiation": s_15.clip(lower=0.0).to_numpy(),
         }
     )
+    return df_out.dropna(subset=["shortwave_radiation"]).reset_index(drop=True)
 
 
 def make_client() -> Client | None:

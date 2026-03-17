@@ -49,7 +49,8 @@ import argparse
 import csv
 import random
 import sys
-from datetime import datetime, timedelta, timezone
+import types
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -66,27 +67,42 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 import ors.services.optimizer.optimizer as opt_module  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Constants (mirror optimizer.py)
+# Constants (derived from example_full_config.json battery spec)
 # ---------------------------------------------------------------------------
-DT = opt_module.DT            # 0.25 h
-N_D = opt_module.N_D          # 96 periods per day
-E_CAP = opt_module.E_CAP
-E_MIN = opt_module.E_MIN
-E_MAX = opt_module.E_MAX
-P_CH_MAX = opt_module.P_CH_MAX
-P_DIS_MAX = opt_module.P_DIS_MAX
-ETA_CH = opt_module.ETA_CH
-ETA_DIS = opt_module.ETA_DIS
-ETA_SOL_SELL = opt_module.ETA_SOL_SELL
-P_AUX = opt_module.P_AUX
-R_SD = opt_module.R_SD
-H_30 = opt_module.H_30
+DT: float = 0.25  # 15-min time step in hours
+N_D: int = 96  # periods per day
+E_CAP: float = 200.0  # MWh — energy_capacity_mwh
+E_MIN: float = 20.0  # MWh — 10% of E_CAP (min_soc_percent)
+E_MAX: float = 180.0  # MWh — 90% of E_CAP (max_soc_percent)
+P_CH_MAX: float = 50.0  # MW — rated_power_mw
+P_DIS_MAX: float = 50.0  # MW — rated_power_mw
+ETA_CH: float = 0.97  # charge_efficiency
+ETA_DIS: float = 0.97  # discharge_efficiency
+ETA_SOL_SELL: float = 0.97
+P_AUX: float = 1.0  # MW — auxiliary_power_mw
+R_SD: float = 0.0005  # self_discharge_rate_per_hour
+H_30: float = 0.5  # hours — first 30 min of day for p_30 calculation
+MAX_CYCLES_PER_DAY: int = 3
 
-PERIODS_PER_4H = 16   # 4 hours at 15-min resolution
+# Battery spec object passed to build_model (base; current_energy_mwh overridden per call)
+_BASE_BATTERY_SPEC = types.SimpleNamespace(
+    rated_power_mw=P_CH_MAX,
+    energy_capacity_mwh=E_CAP,
+    min_soc_percent=E_MIN / E_CAP * 100.0,
+    max_soc_percent=E_MAX / E_CAP * 100.0,
+    charge_efficiency=ETA_CH,
+    discharge_efficiency=ETA_DIS,
+    auxiliary_power_mw=P_AUX,
+    self_discharge_rate_per_hour=R_SD,
+    max_cycles_per_day=MAX_CYCLES_PER_DAY,
+    current_energy_mwh=None,
+)
+
+PERIODS_PER_4H = 16  # 4 hours at 15-min resolution
 PERIODS_PER_15MIN = 1
 
 PRICE_CSV = REPO_ROOT / "Data" / "price_data_rotated_2d.csv"
-HIST_DAYS = 30        # days of historical price context required for p_30
+HIST_DAYS = 30  # days of historical price context required for p_30
 
 
 # ---------------------------------------------------------------------------
@@ -132,9 +148,7 @@ def compute_p30(df_all: pd.DataFrame, run_time: datetime) -> float:
     if df_hist.empty:
         return float(df_all["price"].mean())
 
-    df_hist["time_h"] = (
-        df_hist["timestamp"].dt.hour + df_hist["timestamp"].dt.minute / 60.0
-    )
+    df_hist["time_h"] = df_hist["timestamp"].dt.hour + df_hist["timestamp"].dt.minute / 60.0
     prices = df_hist.loc[df_hist["time_h"] < H_30, "price"]
     return float(prices.mean()) if not prices.empty else float(df_hist["price"].mean())
 
@@ -200,7 +214,7 @@ def pregenerate_solar(
         return None
 
     # Build list of (chunk_start, chunk_end) pairs
-    window_end = end_dt + timedelta(days=1)   # extra day for look-ahead
+    window_end = end_dt + timedelta(days=1)  # extra day for look-ahead
     boundaries: list[tuple[datetime, datetime]] = []
     cursor = start_dt
     while cursor < window_end:
@@ -260,8 +274,7 @@ def build_price_solar_dicts(
     last_price = float(rows["price"].iloc[-1]) if not rows.empty else 100.0
 
     price: dict[int, float] = {
-        i + 1: float(rows.loc[i, "price"]) if i < len(rows) else last_price
-        for i in range(N_D)
+        i + 1: float(rows.loc[i, "price"]) if i < len(rows) else last_price for i in range(N_D)
     }
 
     solar: dict[int, float] = {}
@@ -271,9 +284,7 @@ def build_price_solar_dicts(
         for i in range(N_D):
             pv_idx = pv_base + i
             solar[i + 1] = (
-                float(df_solar.iloc[pv_idx]["generation_MW"])
-                if pv_idx < len(df_solar)
-                else 0.0
+                float(df_solar.iloc[pv_idx]["generation_MW"]) if pv_idx < len(df_solar) else 0.0
             )
     else:
         solar = {i + 1: 0.0 for i in range(N_D)}
@@ -340,12 +351,18 @@ def run_single_optimize(
     can correctly detect a cycle event at t=1.
     Returns (model, solve_info). On failure, model is None.
     """
-    original_e0 = opt_module.E0
-    opt_module.E0 = e0
+    battery_spec = types.SimpleNamespace(**vars(_BASE_BATTERY_SPEC))
+    battery_spec.current_energy_mwh = e0
     try:
         m = opt_module.build_model(
-            price, solar, p_30, cycles_used_today, t_boundary,
-            q_init=q_init, z_dis_init=z_dis_init,
+            price,
+            solar,
+            p_30,
+            cycles_used_today,
+            t_boundary,
+            q_init=q_init,
+            z_dis_init=z_dis_init,
+            battery_spec=battery_spec,
         )
         result = solver.solve(m, tee=False)
 
@@ -372,8 +389,6 @@ def run_single_optimize(
             "termination_condition": "exception",
             "error": f"{type(exc).__name__}: {exc}",
         }
-    finally:
-        opt_module.E0 = original_e0
 
 
 # ---------------------------------------------------------------------------
@@ -382,13 +397,7 @@ def run_single_optimize(
 def simulate_step(e_prev: float, p_grid: float, p_dis: float, p_sol_bat: float) -> float:
     """Return the new energy level after one DT-hour step, clamped to [E_MIN, E_MAX]."""
     p_ch = p_grid + p_sol_bat
-    e_new = (
-        e_prev
-        + ETA_CH * p_ch * DT
-        - (p_dis * DT) / ETA_DIS
-        - P_AUX * DT
-        - e_prev * R_SD * DT
-    )
+    e_new = e_prev + ETA_CH * p_ch * DT - (p_dis * DT) / ETA_DIS - P_AUX * DT - e_prev * R_SD * DT
     return float(max(E_MIN, min(E_MAX, e_new)))
 
 
@@ -443,15 +452,15 @@ def run_backtest(
     idx_start = int(df_all["timestamp"].searchsorted(start_dt))
     total_steps = n_sim_days * N_D
 
-    e_soc = 0.5 * E_CAP   # initial state of charge
-    cycles_since_23 = 0   # cycles executed since last 23:00 boundary
+    e_soc = 0.5 * E_CAP  # initial state of charge
+    cycles_since_23 = 0  # cycles executed since last 23:00 boundary
 
     # Simulation-state cycle detection: compensates for the optimizer skipping
     # cycle_and constraints at t=1, which makes m.cycle[1] always 0.
     # In 1-week mode every committed step is t=1, so without this every cycle
     # count would be 0.
-    q_sim = False        # True once we have charged since the last discharge
-    prev_z_dis_sim = 0   # z_dis value from the previous committed step
+    q_sim = False  # True once we have charged since the last discharge
+    prev_z_dis_sim = 0  # z_dis value from the previous committed step
 
     # Current committed plan: list of tuples (one per 15-min period over 24h)
     committed_plan: list[tuple] = []
@@ -537,7 +546,7 @@ def run_backtest(
     trace_file = None
     trace_writer = None
     if trace_output_path is not None:
-        trace_file = open(trace_output_path, "w", newline="", encoding="utf-8")
+        trace_file = open(trace_output_path, "w", newline="", encoding="utf-8")  # noqa: SIM115
         trace_writer = csv.DictWriter(trace_file, fieldnames=trace_fieldnames)
         trace_writer.writeheader()
         trace_file.flush()
@@ -554,14 +563,11 @@ def run_backtest(
             ts: pd.Timestamp = df_all.iloc[data_idx]["timestamp"]
             actual_price = float(df_all.iloc[data_idx]["price"])
 
-        # ------------------------------------------------------------------
-        # Re-plan?  Yes when we have no plan or the current commit window
-        # has been consumed.
-        # ------------------------------------------------------------------
-            need_replan = (
-                len(committed_plan) == 0
-                or (step - committed_from_step) >= commit_periods
-            )
+            # ------------------------------------------------------------------
+            # Re-plan?  Yes when we have no plan or the current commit window
+            # has been consumed.
+            # ------------------------------------------------------------------
+            need_replan = len(committed_plan) == 0 or (step - committed_from_step) >= commit_periods
 
             if need_replan:
                 price_dict_perfect, solar_dict = build_price_solar_dicts(df_all, data_idx, df_solar)
@@ -595,18 +601,24 @@ def run_backtest(
                 hours_to_23 = (next_23 - ts_py).total_seconds() / 3600.0
                 t_boundary = max(1, min(N_D, int(round(hours_to_23 / DT))))
 
-                cycles_for_model = min(cycles_since_23, opt_module.MAX_CYCLES_PER_DAY)
-                if cycles_since_23 > opt_module.MAX_CYCLES_PER_DAY:
+                cycles_for_model = min(cycles_since_23, MAX_CYCLES_PER_DAY)
+                if cycles_since_23 > MAX_CYCLES_PER_DAY:
                     print(
                         f"  [step {step}] WARNING: cycles_since_23={cycles_since_23} exceeds "
-                        f"MAX_CYCLES_PER_DAY={opt_module.MAX_CYCLES_PER_DAY}. Clamping to avoid infeasible MILP."
+                        f"MAX_CYCLES_PER_DAY={MAX_CYCLES_PER_DAY}. Clamping to avoid infeasible MILP."
                     )
 
                 n_optimizer_calls += 1
                 m, solve_info = run_single_optimize(
-                    solver, price_dict, solar_dict, p_30,
-                    cycles_for_model, t_boundary, e_soc,
-                    q_init=int(q_sim), z_dis_init=prev_z_dis_sim,
+                    solver,
+                    price_dict,
+                    solar_dict,
+                    p_30,
+                    cycles_for_model,
+                    t_boundary,
+                    e_soc,
+                    q_init=int(q_sim),
+                    z_dis_init=prev_z_dis_sim,
                 )
                 fail_reason = solve_info["error"]
 
@@ -773,9 +785,7 @@ def run_backtest(
         if trace_file is not None:
             trace_file.close()
 
-    print(
-        f"\nOptimizer calls: {n_optimizer_calls} total, {n_failed_calls} failed."
-    )
+    print(f"\nOptimizer calls: {n_optimizer_calls} total, {n_failed_calls} failed.")
     return pd.DataFrame(records)
 
 
@@ -886,8 +896,7 @@ def main():
     candidates = [
         i
         for i in range(min_prior_rows, len(df_all) - n_sim_rows - N_D)
-        if df_all.iloc[i]["timestamp"].hour == 0
-        and df_all.iloc[i]["timestamp"].minute == 0
+        if df_all.iloc[i]["timestamp"].hour == 0 and df_all.iloc[i]["timestamp"].minute == 0
     ]
 
     if not candidates:
@@ -908,10 +917,7 @@ def main():
     solver = get_solver()
 
     # --- Expected optimizer calls ---
-    if args.mode == "4month":
-        expected_calls = n_days * (24 // 4)   # 6 per day
-    else:
-        expected_calls = n_days * N_D          # 96 per day
+    expected_calls = n_days * (24 // 4) if args.mode == "4month" else n_days * N_D
 
     print(f"\nExpected optimizer calls: ~{expected_calls}")
     print(f"Running {n_days} days x {N_D} steps/day = {n_days * N_D} total steps")
@@ -920,7 +926,7 @@ def main():
     print("\nPre-generating PV solar forecast for simulation window...")
     df_solar = pregenerate_solar(start_dt, end_dt)
 
-    print(f"\nStarting backtest loop...\n")
+    print("\nStarting backtest loop...\n")
 
     trace_records: list[dict] | None = None
     trace_path = None
@@ -928,7 +934,9 @@ def main():
         if args.output is None:
             seed_tag = args.seed if args.seed is not None else "rand"
             out_dir = REPO_ROOT / "tests" / "backtesting"
-            detail_preview = str(out_dir / f"backtest_detail_{args.mode}_{args.price_source}_{seed_tag}.csv")
+            detail_preview = str(
+                out_dir / f"backtest_detail_{args.mode}_{args.price_source}_{seed_tag}.csv"
+            )
         else:
             detail_preview = args.output
         trace_path = args.trace_output or detail_preview.replace(".csv", "_trace.csv")
@@ -976,8 +984,12 @@ def main():
     if args.output is None:
         seed_tag = args.seed if args.seed is not None else "rand"
         out_dir = REPO_ROOT / "tests" / "backtesting"
-        detail_path = str(out_dir / f"backtest_detail_{args.mode}_{args.price_source}_{seed_tag}.csv")
-        summary_path = str(out_dir / f"backtest_summary_{args.mode}_{args.price_source}_{seed_tag}.csv")
+        detail_path = str(
+            out_dir / f"backtest_detail_{args.mode}_{args.price_source}_{seed_tag}.csv"
+        )
+        summary_path = str(
+            out_dir / f"backtest_summary_{args.mode}_{args.price_source}_{seed_tag}.csv"
+        )
     else:
         detail_path = args.output
         summary_path = detail_path.replace(".csv", "_summary.csv")

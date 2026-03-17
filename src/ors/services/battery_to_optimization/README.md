@@ -24,18 +24,42 @@ battery_to_optimization/
 ## Dependencies
 
 - Battery management module (`../battery/`)
+- Optimization config module (`ors.config.optimization_config`)
 - Pandas for data processing
-- Battery configuration JSON file
 - Optimizer results DataFrame
 
 ## Core Functions
 
-### `load_optimizer_battery_config()`
-Loads battery parameters from the battery module configuration.
+### `battery_spec_to_params()`
+Translates a `BatteryConfiguration` (from the optimization config template) into a `BatteryParams` object used by the battery physics engine.
 
-**Returns:** 
-- `BatteryParams`: Battery configuration object
-- `dict`: Simulation defaults (time step, bounds, etc.)
+**Parameters:**
+- `battery_config`: `BatteryConfiguration` loaded from the optimization config template
+
+**Returns:**
+- `BatteryParams`: Battery parameters for simulation and optimization
+
+**Example:**
+```python
+from ors.config.optimization_config import load_config_from_json
+from battery_inference import battery_spec_to_params
+
+config = load_config_from_json('config_templates/example_full_config.json')
+params = battery_spec_to_params(config.battery)
+```
+
+**Translation mapping:**
+
+| Template field | `BatteryParams` field | Notes |
+|---|---|---|
+| `rated_power_mw` | `p_rated_mw` | Direct |
+| `charge_efficiency` | `eta_ch` | Direct |
+| `discharge_efficiency` | `eta_dis` | Direct |
+| `auxiliary_power_mw` | `a_aux` | Divided by `rated_power_mw` (stored as fraction) |
+| `self_discharge_rate_per_hour` | `r_sd_per_hour` | Direct |
+| `energy_capacity_mwh` | `e_duration_hours` | Divided by `rated_power_mw` |
+| `min_soc_percent` | `e_min_frac` | Divided by 100 |
+| `max_soc_percent` | `e_max_frac` | Divided by 100 |
 
 ### `create_optimizer_log_entries()`
 Converts optimizer results into detailed battery step logs.
@@ -55,7 +79,7 @@ Main function that processes optimizer results and creates battery CSV.
 **Parameters:**
 - `df_results`: Optimizer results DataFrame
 - `csv_path`: Output CSV file path
-- `params`: Battery parameters (optional, loaded from config if None)
+- `params`: `BatteryParams` from `battery_spec_to_params()`
 - `dt_hours`: Time step duration
 - `start_datetime`: Optional start time
 - `validate`: Whether to validate energy balance
@@ -87,25 +111,22 @@ The optimizer must provide a DataFrame with these columns:
 - `cycle`: Cycle event indicator
 
 ### Battery Configuration
-Uses standard battery module configuration:
+Battery parameters come from the optimization config template (`config_templates/`). The `battery` section of the template is the single source of truth:
 ```json
 {
-  "battery_params": {
-    "p_rated_mw": 100.0,
-    "eta_ch": 0.97,
-    "eta_dis": 0.97,
-    "a_aux": 0.005,
-    "r_sd_per_hour": 0.0005,
-    "e_duration_hours": 3.0,
-    "e_min_frac": 0.10,
-    "e_max_frac": 0.90
-  },
-  "simulation_defaults": {
-    "dt_hours": 0.25,
-    "enforce_bounds": true
+  "battery": {
+    "rated_power_mw": 50.0,
+    "energy_capacity_mwh": 200.0,
+    "min_soc_percent": 10.0,
+    "max_soc_percent": 90.0,
+    "charge_efficiency": 0.97,
+    "discharge_efficiency": 0.97,
+    "auxiliary_power_mw": 0.3,
+    "self_discharge_rate_per_hour": 0.0005
   }
 }
 ```
+Use `battery_spec_to_params()` to convert this into `BatteryParams` for the physics engine.
 
 ## Output Format
 
@@ -137,73 +158,51 @@ The output CSV contains detailed battery operation logs:
 ### 1. Basic Integration
 
 ```python
-from battery_inference import create_enhanced_optimizer_output
+from ors.config.optimization_config import load_config_from_json
+from battery_inference import battery_spec_to_params, create_enhanced_optimizer_output
+
+# Load battery parameters from the optimization config template
+config = load_config_from_json('config_templates/example_full_config.json')
+params = battery_spec_to_params(config.battery)
+dt_hours = config.optimization.time_step_minutes / 60
 
 # After optimization completes
 export_results = create_enhanced_optimizer_output(
     df_results=optimizer_output,
     csv_path="battery_storage.csv",
-    validate=True
-)
-```
-
-### 2. With Custom Configuration
-
-```python
-from battery_inference import (
-    load_optimizer_battery_config,
-    create_enhanced_optimizer_output
-)
-
-# Load specific battery configuration
-params, defaults = load_optimizer_battery_config("custom_battery_config.json")
-
-# Process results with custom parameters
-export_results = create_enhanced_optimizer_output(
-    df_results=optimizer_output,
-    csv_path="battery_storage.csv",
     params=params,
-    dt_hours=defaults["dt_hours"],
-    start_datetime=datetime(2024, 6, 15, 0, 0, 0),
+    dt_hours=dt_hours,
     validate=True
 )
 ```
 
-### 3. Integration in Optimizer Script
+### 2. Integration in the Pipeline (`run_optimization.py`)
 
 ```python
-# In optimizer.py
-from battery_inference import create_enhanced_optimizer_output
+from battery_inference import battery_spec_to_params, create_enhanced_optimizer_output
 
-# After solving optimization model...
-out = process_optimizer_results()
+# battery_spec comes from the loaded OptimizationConfig
+params = battery_spec_to_params(config.battery)
+dt_hours = config.optimization.time_step_minutes / 60
 
-# Create battery logs
-try:
-    start_datetime = datetime(2024, 6, 15, 0, 0, 0)
-    
-    export_results = create_enhanced_optimizer_output(
-        df_results=out,
-        csv_path="src/ors/services/battery_to_optimization/battery_storage.csv",
-        params=battery_params,
-        dt_hours=DT,
-        start_datetime=start_datetime,
-        validate=True
-    )
-    
-    print(f"✓ Battery logs saved: {export_results['csv_path']}")
-    print(f"  Steps processed: {export_results['num_steps']}")
-    
-    # Check validation results
-    if 'validation' in export_results:
-        validation = export_results['validation']
-        if validation['is_valid']:
-            print(f"✓ Energy balance validation: PASSED")
-        else:
-            print(f"⚠ Energy balance validation: FAILED")
-            
-except Exception as e:
-    print(f"⚠ Battery logging failed: {e}")
+export_results = create_enhanced_optimizer_output(
+    df_results=out,
+    csv_path=config.output.detailed_log_path,
+    params=params,
+    dt_hours=dt_hours,
+    start_datetime=config.optimization_start_datetime,
+    validate=True
+)
+
+print(f"Battery logs saved: {export_results['csv_path']}")
+print(f"Steps processed: {export_results['num_steps']}")
+
+if 'validation' in export_results:
+    validation = export_results['validation']
+    if validation['is_valid']:
+        print("Energy balance validation: PASSED")
+    else:
+        print(f"Energy balance validation: FAILED ({validation['summary']['failed_steps']} errors)")
 ```
 
 ## Validation Features
@@ -242,9 +241,9 @@ validation_results = {
 
 ### Common Issues
 
-**Empty CSV files**: 
+**Empty CSV files**:
 - Check that optimizer DataFrame has required columns
-- Verify battery configuration file exists and is valid
+- Verify `params` was created via `battery_spec_to_params()` from a valid config
 - Ensure all numeric values are finite (not NaN/inf)
 
 **Validation failures**:
@@ -264,7 +263,7 @@ validation_results = {
 Provides comprehensive unit testing and validation for all integration functions with pytest-based test framework.
 
 **Test Coverage:**
-- `TestLoadOptimizerBatteryConfig`: Configuration loading and validation
+- `TestBatterySpecToParams`: Template-to-BatteryParams translation
 - `TestCreateOptimizerLogEntries`: Log entry creation and data processing
 - `TestValidateOptimizerEnergyBalance`: Energy balance validation algorithms
 - `TestExportOptimizerResults`: CSV export functionality and output formats

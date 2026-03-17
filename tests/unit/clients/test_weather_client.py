@@ -254,9 +254,9 @@ class TestDefaultParams:
 
 
 def _make_fake_client(block_start_epoch, values, captured=None):
-    """Return a FakeClient whose weather_api returns a single minutely response."""
+    """Return a FakeClient whose weather_api returns a single minutely/hourly response."""
 
-    class FakeMinutelyVar:
+    class FakeVar:
         def values_as_numpy(self):
             return np.array(values, dtype=np.float64)
 
@@ -265,20 +265,24 @@ def _make_fake_client(block_start_epoch, values, captured=None):
                 return self.values_as_numpy
             raise AttributeError(name)
 
-    class FakeMinutelyBlock:
+    class FakeBlock:
         def time(self):
             return block_start_epoch
 
         def time_end(self):
             return block_start_epoch + len(values) * 900
 
+        def interval(self):
+            return 900
+
         def variables(self, i):
-            return FakeMinutelyVar()
+            return FakeVar()
 
         def __getattr__(self, name):
             mapping = {
                 "Time": self.time,
                 "TimeEnd": self.time_end,
+                "Interval": self.interval,
                 "Variables": self.variables,
             }
             if name in mapping:
@@ -287,11 +291,16 @@ def _make_fake_client(block_start_epoch, values, captured=None):
 
     class FakeResponse:
         def minutely_15(self):
-            return FakeMinutelyBlock()
+            return FakeBlock()
+
+        def hourly(self):
+            return FakeBlock()
 
         def __getattr__(self, name):
             if name == "Minutely15":
                 return self.minutely_15
+            if name == "Hourly":
+                return self.hourly
             raise AttributeError(name)
 
     class FakeClient:
@@ -327,13 +336,14 @@ class TestSolarRadiance15Mins:
         solar_radiance_15_mins(client, start, end)
         assert captured["params"]["longitude"] == pytest.approx(-2.6679993)
 
-    def test_params_model(self):
+    def test_params_hourly_var(self):
+        # Historical dates use the archive path; radiation is requested as hourly.
         captured = {}
         start = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
         end = datetime(2026, 3, 1, 0, 45, tzinfo=timezone.utc)
         client = _make_fake_client(_MIDNIGHT, [100.0] * 4, captured)
         solar_radiance_15_mins(client, start, end)
-        assert captured["params"]["models"] == "ukmo_uk_deterministic_2km"
+        assert captured["params"]["hourly"] == ["shortwave_radiation"]
 
     def test_params_timezone(self):
         captured = {}
@@ -343,15 +353,8 @@ class TestSolarRadiance15Mins:
         solar_radiance_15_mins(client, start, end)
         assert captured["params"]["timezone"] == "GMT"
 
-    def test_params_minutely_15_vars(self):
-        captured = {}
-        start = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
-        end = datetime(2026, 3, 1, 0, 45, tzinfo=timezone.utc)
-        client = _make_fake_client(_MIDNIGHT, [100.0] * 4, captured)
-        solar_radiance_15_mins(client, start, end)
-        assert captured["params"]["minutely_15"] == ["shortwave_radiation"]
-
     def test_params_has_all_expected_keys(self):
+        # Historical dates use the archive API; check archive request keys.
         captured = {}
         start = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
         end = datetime(2026, 3, 1, 0, 45, tzinfo=timezone.utc)
@@ -360,33 +363,32 @@ class TestSolarRadiance15Mins:
         expected_keys = {
             "latitude",
             "longitude",
-            "models",
+            "start_date",
+            "end_date",
+            "hourly",
             "timezone",
-            "minutely_15",
-            "forecast_minutely_15",
         }
         assert set(captured["params"].keys()) == expected_keys
 
-    def test_uses_forecast_api_url(self):
+    def test_uses_archive_api_url(self):
+        # Historical dates should use the archive API, not the forecast API.
         captured = {}
         start = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
         end = datetime(2026, 3, 1, 0, 45, tzinfo=timezone.utc)
         client = _make_fake_client(_MIDNIGHT, [100.0] * 4, captured)
         solar_radiance_15_mins(client, start, end)
-        assert captured["url"] == FORECAST_API_URL
+        assert captured["url"] == ARCHIVE_API_URL
 
-    def test_timesteps_calculated_from_window(self):
+    def test_archive_uses_date_range_params(self):
+        # Archive path sends start_date and end_date, not timestep counts.
         captured = {}
-        # 4pm to 6pm = 6h from midnight → 6*4+1 = 25, but the function
-        # calculates from start-of-day to end_datetime.
         start = datetime(2026, 3, 1, 16, 0, tzinfo=timezone.utc)
         end = datetime(2026, 3, 1, 18, 0, tzinfo=timezone.utc)
-        # Need enough fake values to cover midnight->18:00 = 72 slots + 1
         n_slots = 73
         client = _make_fake_client(_MIDNIGHT, [100.0] * n_slots, captured)
         solar_radiance_15_mins(client, start, end)
-        # 18h from midnight = 18*4 = 72 intervals + 1 = 73 timesteps
-        assert captured["params"]["forecast_minutely_15"] == 73
+        assert captured["params"]["start_date"] == "2026-03-01"
+        assert captured["params"]["end_date"] == "2026-03-01"
 
     # ---- Output shape and content tests ----------------------------------
 
@@ -477,14 +479,15 @@ class TestSolarRadiance15Mins:
             solar_radiance_15_mins(client, start, end)
 
     def test_drops_intermediate_null_rows(self):
-        # Valid first row, some nulls in the middle
+        # Valid first row, some nulls in the middle; archive path interpolates between
+        # surrounding values, so the null slot is filled rather than dropped.
         start = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
         end = datetime(2026, 3, 1, 0, 45, tzinfo=timezone.utc)
         values = [100.0, float("nan"), 300.0, 400.0]
         client = _make_fake_client(_MIDNIGHT, values)
         df = solar_radiance_15_mins(client, start, end)
-        assert len(df) == 3
-        assert df["shortwave_radiation"].tolist() == pytest.approx([100.0, 300.0, 400.0])
+        assert len(df) == 4
+        assert df["shortwave_radiation"].tolist() == pytest.approx([100.0, 200.0, 300.0, 400.0])
 
     def test_drops_trailing_null_rows(self):
         start = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
@@ -514,7 +517,7 @@ class TestSolarRadiance15Mins:
 
         start = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
         end = datetime(2026, 3, 1, 0, 45, tzinfo=timezone.utc)
-        with pytest.raises(WeatherFetcherError, match="No responses"):
+        with pytest.raises(WeatherFetcherError, match="No historical hourly"):
             solar_radiance_15_mins(EmptyClient(), start, end)
 
     def test_raises_on_api_exception_with_context(self):
