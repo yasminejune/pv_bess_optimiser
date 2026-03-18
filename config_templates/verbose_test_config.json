@@ -1,0 +1,53 @@
+{
+  "config_name": "Example Optimization - Verbose Test",
+  "created_by": "Test",
+  "created_date": "2026-03-11",
+  "notes": "Testing verbose output",
+  
+  "pv": {
+    "rated_power_kw": 50000.0,
+    "max_export_kw": 45000.0,
+    "panel_area_m2": 250000.0,
+    "panel_efficiency": 0.20,
+    "generation_source": "forecast",
+    "location_lat": 51.5074,
+    "location_lon": -0.1278,
+    "min_generation_kw": 0.0,
+    "curtailment_supported": true
+  },
+  
+  "battery": {
+    "rated_power_mw": 50.0,
+    "energy_capacity_mwh": 200.0,
+    "min_soc_percent": 10.0,
+    "max_soc_percent": 90.0,
+    "max_cycles_per_day": 3,
+    "charge_efficiency": 0.97,
+    "discharge_efficiency": 0.97,
+    "auxiliary_power_mw": 0.3,
+    "self_discharge_rate_per_hour": 0.0005,
+    "current_energy_mwh": 100.0,
+    "current_power_mw": 0.0,
+    "current_mode": "idle",
+    "cycles_used_today": 0,
+    "is_available": true
+  },
+  
+  "optimization": {
+    "optimization_date": "2026-03-08",
+    "start_time": "00:00",
+    "duration_hours": 1,
+    "time_step_minutes": 15,
+    "price_source": "forecast",
+    "terminal_price_method": "average"
+  },
+  
+  "output": {
+    "output_csv_path": "results/optimization_results_verbose_test.csv",
+    "detailed_log_path": "results/battery_detailed_log_verbose_test.csv",
+    "include_summary": true,
+    "include_recommendations": true,
+    "verbose": true,
+    "console_level": "info"
+  }
+}

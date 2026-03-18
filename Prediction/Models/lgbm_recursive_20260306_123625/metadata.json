@@ -1,0 +1,10 @@
+{
+  "model_name": "lgbm_recursive",
+  "run_timestamp": "2026-03-06T12:36:25",
+  "horizon": 96,
+  "max_lag": 672,
+  "n_estimators": 850,
+  "train_end_idx": 100799,
+  "row_count": 104832,
+  "feature_count": 44
+}
