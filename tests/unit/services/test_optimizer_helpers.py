@@ -1,7 +1,6 @@
 """Tests for optimizer helper functions (get_cycles_used_today, extract_optimizer_initial_state)."""
 
 import pytest
-
 from src.ors.services.optimizer.optimizer import (
     extract_optimizer_initial_state,
     get_cycles_used_today,

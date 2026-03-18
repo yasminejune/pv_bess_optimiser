@@ -1,11 +1,9 @@
 """Tests for optimization_config module."""
 
-import json
 from datetime import date, datetime
 
 import pytest
 from pydantic import ValidationError
-
 from src.ors.config.optimization_config import (
     BatteryConfiguration,
     OptimizationConfig,
@@ -15,7 +13,6 @@ from src.ors.config.optimization_config import (
     load_config_from_json,
     save_config_to_json,
 )
-
 
 # ---------------------------------------------------------------------------
 # PVConfiguration

@@ -118,13 +118,13 @@ class FakeDailyVar:
     def __init__(self, arr):
         self._arr = np.array(arr, dtype=np.float64)
 
-    def ValuesAsNumpy(self):
+    def ValuesAsNumpy(self):  # noqa: N802
         return self._arr
 
-    def ValuesInt64AsNumpy(self):
+    def ValuesInt64AsNumpy(self):  # noqa: N802
         return self._arr.astype(np.int64)
 
-    def Value(self):
+    def Value(self):  # noqa: N802
         return float(self._arr[0])
 
 
@@ -135,16 +135,16 @@ class FakeDailyBlock:
         self._interval = interval
         self._variables = variables
 
-    def Time(self):
+    def Time(self):  # noqa: N802
         return self._start
 
-    def TimeEnd(self):
+    def TimeEnd(self):  # noqa: N802
         return self._end
 
-    def Interval(self):
+    def Interval(self):  # noqa: N802
         return self._interval
 
-    def Variables(self, i):
+    def Variables(self, i):  # noqa: N802
         return self._variables[i]
 
 
@@ -153,10 +153,10 @@ class FakeCurrentBlock:
         self._time_unix = time_unix
         self._variables = variables
 
-    def Time(self):
+    def Time(self):  # noqa: N802
         return self._time_unix
 
-    def Variables(self, i):
+    def Variables(self, i):  # noqa: N802
         return self._variables[i]
 
 
@@ -168,20 +168,18 @@ class FakeFullResponse:
         self._daily = daily
         self._current = current
 
-    def Hourly(self):
+    def Hourly(self):  # noqa: N802
         return self._hourly
 
-    def Daily(self):
+    def Daily(self):  # noqa: N802
         return self._daily
 
-    def Current(self):
+    def Current(self):  # noqa: N802
         return self._current
 
 
 def _hourly_block(n_hours=24, var_count=1):
     start = int(pd.Timestamp("2026-01-01", tz="UTC").timestamp())
-    end = start + n_hours * 3600
-    variables = [FakeDailyVar(np.ones(n_hours) * (i + 10)) for i in range(var_count)]
     return FakeHourlyBlock(start, 3600, [np.ones(n_hours) * (i + 10) for i in range(var_count)])
 
 

@@ -1,9 +1,8 @@
 """Tests for battery_status module."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pytest
-
 from src.ors.domain.models.battery import BatterySpec, BatteryState, BatteryTelemetry
 from src.ors.services.battery.battery_status import (
     determine_operating_mode,

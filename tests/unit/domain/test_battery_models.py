@@ -4,7 +4,6 @@ from datetime import datetime
 
 import pytest
 from pydantic import ValidationError
-
 from src.ors.domain.models.battery import BatterySpec, BatteryState, BatteryTelemetry
 
 
@@ -32,21 +31,15 @@ class TestBatterySpec:
 
     def test_rejects_efficiency_zero(self):
         with pytest.raises(ValidationError):
-            BatterySpec(
-                rated_power_mw=100.0, energy_capacity_mwh=600.0, charge_efficiency=0.0
-            )
+            BatterySpec(rated_power_mw=100.0, energy_capacity_mwh=600.0, charge_efficiency=0.0)
 
     def test_rejects_efficiency_above_one(self):
         with pytest.raises(ValidationError):
-            BatterySpec(
-                rated_power_mw=100.0, energy_capacity_mwh=600.0, discharge_efficiency=1.5
-            )
+            BatterySpec(rated_power_mw=100.0, energy_capacity_mwh=600.0, discharge_efficiency=1.5)
 
     def test_rejects_negative_aux_power(self):
         with pytest.raises(ValidationError):
-            BatterySpec(
-                rated_power_mw=100.0, energy_capacity_mwh=600.0, auxiliary_power_mw=-0.1
-            )
+            BatterySpec(rated_power_mw=100.0, energy_capacity_mwh=600.0, auxiliary_power_mw=-0.1)
 
     def test_rejects_negative_self_discharge(self):
         with pytest.raises(ValidationError):

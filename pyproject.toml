@@ -221,6 +221,9 @@ exclude = [
     # Pyomo script is a standalone module with no type stubs available
     "src/ors/services/optimizer/optimizer\\.py",
     "src/ors/services/prediction/*.ipynb",
+    # Misplaced test files in src/ (not production code)
+    "src/ors/services/battery/test\\.py",
+    "src/ors/services/battery_to_optimization/test\\.py",
 ]
 
 [[tool.mypy.overrides]]

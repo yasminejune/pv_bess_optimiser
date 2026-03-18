@@ -1,7 +1,6 @@
 """Tests for battery_management module - covers config loading, CSV, step_energy, validation."""
 
 import pytest
-
 from src.ors.services.battery.battery_management import (
     BatteryParams,
     LossBreakdown,
@@ -11,7 +10,6 @@ from src.ors.services.battery.battery_management import (
     step_energy,
     write_simulation_csv,
 )
-
 
 # ---------------------------------------------------------------------------
 # BatteryParams validation
@@ -144,8 +142,12 @@ class TestStepEnergy:
     def test_idle_step(self):
         params = BatteryParams()
         e = step_energy(
-            e_prev_mwh=150.0, p_grid_mw=0, p_sol_mw=0, p_dis_mw=0,
-            params=params, dt_hours=0.25,
+            e_prev_mwh=150.0,
+            p_grid_mw=0,
+            p_sol_mw=0,
+            p_dis_mw=0,
+            params=params,
+            dt_hours=0.25,
         )
         # Should decrease due to aux and self-discharge
         assert e < 150.0
@@ -153,16 +155,24 @@ class TestStepEnergy:
     def test_charge_increases_energy(self):
         params = BatteryParams()
         e = step_energy(
-            e_prev_mwh=150.0, p_grid_mw=50.0, p_sol_mw=0, p_dis_mw=0,
-            params=params, dt_hours=0.25,
+            e_prev_mwh=150.0,
+            p_grid_mw=50.0,
+            p_sol_mw=0,
+            p_dis_mw=0,
+            params=params,
+            dt_hours=0.25,
         )
         assert e > 150.0
 
     def test_discharge_decreases_energy(self):
         params = BatteryParams()
         e = step_energy(
-            e_prev_mwh=200.0, p_grid_mw=0, p_sol_mw=0, p_dis_mw=50.0,
-            params=params, dt_hours=0.25,
+            e_prev_mwh=200.0,
+            p_grid_mw=0,
+            p_sol_mw=0,
+            p_dis_mw=50.0,
+            params=params,
+            dt_hours=0.25,
         )
         assert e < 200.0
 
@@ -170,24 +180,38 @@ class TestStepEnergy:
         params = BatteryParams()
         with pytest.raises(ValueError, match="dt_hours"):
             step_energy(
-                e_prev_mwh=150.0, p_grid_mw=0, p_sol_mw=0, p_dis_mw=0,
-                params=params, dt_hours=0,
+                e_prev_mwh=150.0,
+                p_grid_mw=0,
+                p_sol_mw=0,
+                p_dis_mw=0,
+                params=params,
+                dt_hours=0,
             )
 
     def test_enforce_bounds_clamps(self):
         params = BatteryParams(p_rated_mw=100.0, e_duration_hours=3.0, e_min_frac=0.1)
         # Try to discharge below e_min
         e = step_energy(
-            e_prev_mwh=35.0, p_grid_mw=0, p_sol_mw=0, p_dis_mw=100.0,
-            params=params, dt_hours=0.25, enforce_bounds=True,
+            e_prev_mwh=35.0,
+            p_grid_mw=0,
+            p_sol_mw=0,
+            p_dis_mw=100.0,
+            params=params,
+            dt_hours=0.25,
+            enforce_bounds=True,
         )
         assert e >= params.e_min_mwh
 
     def test_no_enforce_bounds(self):
         params = BatteryParams(p_rated_mw=100.0, e_duration_hours=3.0, e_min_frac=0.1)
         e = step_energy(
-            e_prev_mwh=35.0, p_grid_mw=0, p_sol_mw=0, p_dis_mw=100.0,
-            params=params, dt_hours=0.25, enforce_bounds=False,
+            e_prev_mwh=35.0,
+            p_grid_mw=0,
+            p_sol_mw=0,
+            p_dis_mw=100.0,
+            params=params,
+            dt_hours=0.25,
+            enforce_bounds=False,
         )
         # Without bounds enforcement, can go below e_min
         assert e < params.e_min_mwh
@@ -203,15 +227,23 @@ class TestComputeLosses:
         params = BatteryParams()
         with pytest.raises(ValueError, match="dt_hours"):
             compute_losses(
-                e_prev_mwh=150.0, p_grid_mw=0, p_sol_mw=0, p_dis_mw=0,
-                params=params, dt_hours=0,
+                e_prev_mwh=150.0,
+                p_grid_mw=0,
+                p_sol_mw=0,
+                p_dis_mw=0,
+                params=params,
+                dt_hours=0,
             )
 
     def test_idle_has_aux_and_self_discharge(self):
         params = BatteryParams()
         lb = compute_losses(
-            e_prev_mwh=150.0, p_grid_mw=0, p_sol_mw=0, p_dis_mw=0,
-            params=params, dt_hours=0.25,
+            e_prev_mwh=150.0,
+            p_grid_mw=0,
+            p_sol_mw=0,
+            p_dis_mw=0,
+            params=params,
+            dt_hours=0.25,
         )
         assert lb.loss_aux_mwh > 0
         assert lb.loss_self_discharge_mwh > 0
@@ -224,8 +256,6 @@ class TestComputeLosses:
 # ---------------------------------------------------------------------------
 
 
-
-
 # ---------------------------------------------------------------------------
 # CSV logging
 # ---------------------------------------------------------------------------
@@ -235,14 +265,24 @@ class TestCSVLogging:
     def _make_log_entry(self):
         params = BatteryParams()
         lb = compute_losses(
-            e_prev_mwh=150.0, p_grid_mw=50.0, p_sol_mw=0, p_dis_mw=0,
-            params=params, dt_hours=0.25,
+            e_prev_mwh=150.0,
+            p_grid_mw=50.0,
+            p_sol_mw=0,
+            p_dis_mw=0,
+            params=params,
+            dt_hours=0.25,
         )
         return create_log_entry(
-            step=0, t_hours=0.0, dt_hours=0.25,
-            p_grid_mw=50.0, p_sol_mw=0.0, p_dis_mw=0.0,
-            e_prev_mwh=150.0, e_next_mwh=162.0,
-            losses=lb, eta_ch=params.eta_ch,
+            step=0,
+            t_hours=0.0,
+            dt_hours=0.25,
+            p_grid_mw=50.0,
+            p_sol_mw=0.0,
+            p_dis_mw=0.0,
+            e_prev_mwh=150.0,
+            e_next_mwh=162.0,
+            losses=lb,
+            eta_ch=params.eta_ch,
         )
 
     def test_create_log_entry(self):
@@ -254,14 +294,24 @@ class TestCSVLogging:
     def test_create_log_entry_with_timestamp(self):
         params = BatteryParams()
         lb = compute_losses(
-            e_prev_mwh=150.0, p_grid_mw=0, p_sol_mw=0, p_dis_mw=0,
-            params=params, dt_hours=0.25,
+            e_prev_mwh=150.0,
+            p_grid_mw=0,
+            p_sol_mw=0,
+            p_dis_mw=0,
+            params=params,
+            dt_hours=0.25,
         )
         entry = create_log_entry(
-            step=0, t_hours=0.0, dt_hours=0.25,
-            p_grid_mw=0, p_sol_mw=0, p_dis_mw=0,
-            e_prev_mwh=150.0, e_next_mwh=149.0,
-            losses=lb, eta_ch=params.eta_ch,
+            step=0,
+            t_hours=0.0,
+            dt_hours=0.25,
+            p_grid_mw=0,
+            p_sol_mw=0,
+            p_dis_mw=0,
+            e_prev_mwh=150.0,
+            e_next_mwh=149.0,
+            losses=lb,
+            eta_ch=params.eta_ch,
             timestamp_iso="2026-01-01T00:00:00",
         )
         assert entry["timestamp_iso"] == "2026-01-01T00:00:00"
@@ -280,14 +330,24 @@ class TestCSVLogging:
     def test_write_csv_with_timestamp(self, tmp_path):
         params = BatteryParams()
         lb = compute_losses(
-            e_prev_mwh=150.0, p_grid_mw=0, p_sol_mw=0, p_dis_mw=0,
-            params=params, dt_hours=0.25,
+            e_prev_mwh=150.0,
+            p_grid_mw=0,
+            p_sol_mw=0,
+            p_dis_mw=0,
+            params=params,
+            dt_hours=0.25,
         )
         entry = create_log_entry(
-            step=0, t_hours=0.0, dt_hours=0.25,
-            p_grid_mw=0, p_sol_mw=0, p_dis_mw=0,
-            e_prev_mwh=150.0, e_next_mwh=149.0,
-            losses=lb, eta_ch=params.eta_ch,
+            step=0,
+            t_hours=0.0,
+            dt_hours=0.25,
+            p_grid_mw=0,
+            p_sol_mw=0,
+            p_dis_mw=0,
+            e_prev_mwh=150.0,
+            e_next_mwh=149.0,
+            losses=lb,
+            eta_ch=params.eta_ch,
             timestamp_iso="2026-01-01T00:00:00",
         )
         csv_path = tmp_path / "out.csv"

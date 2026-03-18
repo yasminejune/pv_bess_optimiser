@@ -3,7 +3,6 @@
 from datetime import datetime
 
 import pytest
-
 from src.ors.domain.models.pv import PVSpec, PVState, PVTelemetry
 
 

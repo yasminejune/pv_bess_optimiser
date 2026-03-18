@@ -1,11 +1,10 @@
 """Tests for data_loading module."""
 
 import math
-from datetime import datetime
+from datetime import date, datetime
 
 import pandas as pd
 import pytest
-
 from src.ors.config.optimization_config import (
     BatteryConfiguration,
     OptimizationConfig,
@@ -22,11 +21,8 @@ from src.ors.services.data_loading import (
     _load_historical_solar,
     _load_manual_prices,
     _load_manual_solar,
-    load_price_data,
     load_solar_data,
 )
-
-from datetime import date
 
 
 def _make_config(

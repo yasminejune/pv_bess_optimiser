@@ -82,8 +82,8 @@ def _solar_radiance_15_mins_from_archive(
     """Fetch historical hourly radiation and upsample to 15-minute resolution."""
     df_hourly = fetch_hist_hourly(
         client=client,
-        latitude=DEFAULT_PARAMS["latitude"],
-        longitude=DEFAULT_PARAMS["longitude"],
+        latitude=float(DEFAULT_PARAMS["latitude"]),  # type: ignore[arg-type]
+        longitude=float(DEFAULT_PARAMS["longitude"]),  # type: ignore[arg-type]
         start_date=start_datetime.date().isoformat(),
         end_date=end_datetime.date().isoformat(),
         hourly_vars=["shortwave_radiation"],

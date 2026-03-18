@@ -3,8 +3,6 @@
 from types import SimpleNamespace
 
 import pandas as pd
-import pytest
-
 from src.ors.utils.output_formatting import (
     create_action_recommendations,
     create_hourly_summary,
