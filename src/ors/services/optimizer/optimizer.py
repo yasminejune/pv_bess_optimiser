@@ -177,6 +177,7 @@ def build_model(
     verbose: bool = False,
     battery_spec: "BatterySpec | None" = None,
     time_step_hours: float | None = None,
+    initial_energy_mwh: float | None = None,
 ) -> ConcreteModel:
     """Build and return the Pyomo MILP model without solving.
 
@@ -196,6 +197,8 @@ def build_model(
         battery_spec (BatterySpec): Battery specification from the optimization config template.
         time_step_hours (float | None): Time step duration in hours.
             If provided, takes precedence over optimization config value.
+        initial_energy_mwh (float | None): Initial battery energy state in MWh.
+            If provided, takes precedence over battery_spec.current_energy_mwh.
 
     Returns:
         ConcreteModel: Configured Pyomo optimization model
@@ -225,12 +228,13 @@ def build_model(
     m = ConcreteModel()
     m.T = RangeSet(1, n_t)
 
-    # Initial energy: use configured current state, or default to 50% SOC
-    e0 = (
-        battery_spec.current_energy_mwh
-        if battery_spec.current_energy_mwh is not None
-        else e_cap * 0.5
-    )
+    # Initial energy: use provided value, configured current state, or default to 50% SOC
+    if initial_energy_mwh is not None:
+        e0 = initial_energy_mwh
+    elif hasattr(battery_spec, 'current_energy_mwh') and battery_spec.current_energy_mwh is not None:
+        e0 = battery_spec.current_energy_mwh
+    else:
+        e0 = e_cap * 0.5
 
     # Validate initial state bounds
     if e0 < e_min or e0 > e_max:

@@ -42,6 +42,9 @@ class BatterySpec(BaseModel):
     self_discharge_rate_per_hour: float = 0.0005
     """Self-discharge rate per hour (0-1)"""
 
+    max_cycles_per_day: int = 2
+    """Maximum number of charge/discharge cycles per day"""
+
     @field_validator("rated_power_mw", "energy_capacity_mwh")
     @classmethod
     def validate_positive(cls, v: float) -> float:

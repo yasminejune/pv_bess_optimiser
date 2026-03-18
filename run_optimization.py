@@ -202,6 +202,7 @@ class OptimizationRunner:
             discharge_efficiency=battery_config.discharge_efficiency,
             auxiliary_power_mw=battery_config.auxiliary_power_mw,
             self_discharge_rate_per_hour=battery_config.self_discharge_rate_per_hour,
+            max_cycles_per_day=battery_config.max_cycles_per_day,
         )
 
         # Create battery telemetry from current state
@@ -249,10 +250,6 @@ class OptimizationRunner:
             )
             print(f"Info: Cycles used: {cycles_used_today}")
 
-        # Set module-level E0 variable like backtesting does
-        original_e0 = opt_module.E0
-        opt_module.E0 = initial_energy_mwh
-
         try:
             # Build optimization model with backtesting signature
             model = opt_module.build_model(
@@ -266,6 +263,7 @@ class OptimizationRunner:
                 verbose=self.verbose,
                 battery_spec=battery_spec,
                 time_step_hours=self.config.optimization.time_step_minutes / 60.0,
+                initial_energy_mwh=initial_energy_mwh,
             )
 
             # Solve model
@@ -318,9 +316,8 @@ class OptimizationRunner:
 
             return model_results
 
-        finally:
-            # Restore original E0 like backtesting does
-            opt_module.E0 = original_e0
+        except Exception:
+            raise
 
     def _process_results(
         self, model_results: dict[str, Any], battery_spec: BatterySpec
