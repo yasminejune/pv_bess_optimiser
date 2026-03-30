@@ -78,12 +78,20 @@ def _solar_radiance_15_mins_from_archive(
     client: Client,
     start_datetime: datetime,
     end_datetime: datetime,
+    *,
+    latitude: float | None = None,
+    longitude: float | None = None,
 ) -> pd.DataFrame:
     """Fetch historical hourly radiation and upsample to 15-minute resolution."""
+    archive_latitude = float(DEFAULT_PARAMS["latitude"]) if latitude is None else float(latitude)  # type: ignore[arg-type]
+    archive_longitude = (
+        float(DEFAULT_PARAMS["longitude"]) if longitude is None else float(longitude)  # type: ignore[arg-type]
+    )
+
     df_hourly = fetch_hist_hourly(
         client=client,
-        latitude=float(DEFAULT_PARAMS["latitude"]),  # type: ignore[arg-type]
-        longitude=float(DEFAULT_PARAMS["longitude"]),  # type: ignore[arg-type]
+        latitude=archive_latitude,
+        longitude=archive_longitude,
         start_date=start_datetime.date().isoformat(),
         end_date=end_datetime.date().isoformat(),
         hourly_vars=["shortwave_radiation"],
@@ -314,6 +322,11 @@ def solar_radiance_15_mins(
     client: Client,
     start_datetime: datetime | None = None,
     end_datetime: datetime | None = None,
+    *,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    model: str | None = None,
+    timezone_name: str | None = None,
 ) -> pd.DataFrame:
     """Fetch 15-minute solar radiance data for PV power generation modeling.
 
@@ -331,6 +344,10 @@ def solar_radiance_15_mins(
             Defaults to the current UTC time.
         end_datetime: Timezone-aware end of the requested window (inclusive).
             Defaults to 48 hours after *start_datetime*.
+        latitude: Latitude for the API request. Defaults to the site default.
+        longitude: Longitude for the API request. Defaults to the site default.
+        model: Weather model to use for the forecast. Defaults to the API default.
+        timezone_name: Timezone name for the API request. Defaults to ``"UTC"``.
 
     Returns:
         DataFrame with ``timestamp_utc`` and ``shortwave_radiation`` columns
@@ -347,6 +364,15 @@ def solar_radiance_15_mins(
     if end_datetime is None:
         end_datetime = start_datetime + timedelta(hours=48)
 
+    if latitude is None:
+        latitude = float(DEFAULT_PARAMS["latitude"])  # type: ignore[arg-type]
+    if longitude is None:
+        longitude = float(DEFAULT_PARAMS["longitude"])  # type: ignore[arg-type]
+    if model is None:
+        model = str(DEFAULT_PARAMS["models"])
+    if timezone_name is None:
+        timezone_name = str(DEFAULT_PARAMS["timezone"])
+
     if start_datetime > end_datetime:
         raise WeatherFetcherError(
             f"start_datetime ({start_datetime}) must not be after end_datetime ({end_datetime})"
@@ -355,7 +381,13 @@ def solar_radiance_15_mins(
     # Historical backtests require archive data, not forecast data.
     now_utc = datetime.now(tz=timezone.utc)
     if end_datetime < now_utc:
-        return _solar_radiance_15_mins_from_archive(client, start_datetime, end_datetime)
+        return _solar_radiance_15_mins_from_archive(
+            client,
+            start_datetime,
+            end_datetime,
+            latitude=latitude,
+            longitude=longitude,
+        )
 
     def _fetch_window(window_start: datetime, window_end: datetime) -> pd.DataFrame:
         # Calculate timesteps from midnight (API behavior) to requested end.
@@ -364,12 +396,12 @@ def solar_radiance_15_mins(
         timesteps = int(total_seconds / (15 * 60)) + 1
 
         params: dict[str, Any] = {
-            "latitude": DEFAULT_PARAMS["latitude"],
-            "longitude": DEFAULT_PARAMS["longitude"],
+            "latitude": latitude,
+            "longitude": longitude,
             "minutely_15": ["shortwave_radiation"],
             "forecast_minutely_15": timesteps,
-            "models": "ukmo_uk_deterministic_2km",
-            "timezone": "GMT",
+            "models": model,
+            "timezone": timezone_name,
         }
 
         try:

@@ -31,6 +31,12 @@ from src.ors.services.battery.battery_status import update_battery_state
 from src.ors.services.battery_to_optimization.battery_inference import (
     create_enhanced_optimizer_output,
 )
+from src.ors.services.data_loading import (
+    _calculate_terminal_price,
+    load_price_data,
+    load_solar_data,
+)
+from src.ors.services.optimizer.integration import create_input_df
 
 
 class OptimizationRunner:
@@ -65,6 +71,12 @@ class OptimizationRunner:
             # Stage 2: Initialize battery state
             self._print_stage("2. Initializing Battery State")
             battery_state, battery_spec = self._initialize_battery_state()
+            if self.verbose:
+                # Print battery state summary
+                print("Battery state initialized:")
+                print(f"  - SOC: {battery_state.soc_percent:.1f}%")
+                print(f"  - Mode: {battery_state.operating_mode}")
+                print(f"  - Available: {battery_state.is_available}")
 
             # Stage 3: Build and solve optimization model
             self._print_stage("3. Running Optimization")
@@ -115,59 +127,61 @@ class OptimizationRunner:
             raise
 
     def _load_data(self) -> tuple[dict[int, float], float, dict[int, float]]:
-        """Load price and solar data using direct service calls like backtesting does."""
+        """Load price and solar data for the optimization horizon."""
         start_datetime = self.config.optimization_start_datetime
         end_datetime = self.config.optimization_end_datetime
         time_step_minutes = self.config.optimization.time_step_minutes
 
         if self.verbose:
-            print("Info: Loading data using direct service calls...")
+            print("Info: Loading optimization inputs...")
 
-        # Load price data - use dummy data like backtesting does for now
-        price_data, terminal_price = self._create_dummy_price_data(
-            start_datetime, end_datetime, time_step_minutes
-        )
+        if self._should_use_merged_forecast_path():
+            try:
+                if self.verbose:
+                    print("Info: Loading merged forecast price/PV inputs...")
 
-        # Load solar data using the same service backtesting uses
+                merged_df = create_input_df(
+                    config=self.config.pv,
+                    start_datetime=start_datetime,
+                    end_datetime=end_datetime,
+                    time_step_minutes=time_step_minutes,
+                )
+            except Exception as e:
+                print(f"Warning: Merged forecast loading failed: {e}")
+                print("Info: Falling back to independent price and solar loaders")
+            else:
+                price_data = self._frame_column_to_dict(merged_df, "price_intraday", scale=1.0)
+                solar_data = self._frame_column_to_dict(merged_df, "generation_kw", scale=0.001)
+                terminal_price = _calculate_terminal_price(price_data, self.config)
+                self._print_data_summary(price_data, solar_data, terminal_price)
+                return price_data, terminal_price, solar_data
+
+        try:
+            price_data, terminal_price = load_price_data(
+                self.config,
+                start_datetime,
+                end_datetime,
+                time_step_minutes,
+            )
+        except Exception as e:
+            print(f"Warning: Price loading failed: {e}")
+            print("Info: Using fallback price pattern")
+            price_data, terminal_price = self._create_fallback_prices(
+                start_datetime, end_datetime, time_step_minutes
+            )
+
         if self.config.has_pv:
             try:
-                from datetime import timezone
-
-                from src.ors.config.pv_config import SiteType, get_pv_config
-                from src.ors.services.weather_to_pv import generate_pv_power_for_date_range
-
-                if self.verbose:
-                    print("Info: Generating PV power forecast...")
-
-                # Use same config as backtesting
-                pv_config = get_pv_config(SiteType.BURST_1)
-
-                # Convert timezone-naive datetimes to timezone-aware UTC datetimes
-                start_datetime_utc = start_datetime.replace(tzinfo=timezone.utc)
-                end_datetime_utc = end_datetime.replace(tzinfo=timezone.utc)
-
-                # Generate PV data
-                df = generate_pv_power_for_date_range(
-                    config=pv_config,
-                    start_datetime=start_datetime_utc,
-                    end_datetime=end_datetime_utc,
+                solar_data = load_solar_data(
+                    self.config,
+                    start_datetime,
+                    end_datetime,
+                    time_step_minutes,
                 )
-
-                # Convert to MW dict (kW -> MW conversion like backtesting)
-                df["generation_MW"] = df["generation_kw"] / 1000.0
-                solar_data = {
-                    i + 1: float(df.iloc[i]["generation_MW"])
-                    for i in range(min(len(df), self.config.total_time_steps))
-                }
-
-                # Fill any missing timesteps with zero
-                for i in range(len(solar_data) + 1, self.config.total_time_steps + 1):
-                    solar_data[i] = 0.0
-
             except Exception as e:
-                print(f"Warning: Solar generation failed: {e}")
-                print("Info: Using dummy solar pattern")
-                solar_data = self._create_dummy_solar_data(
+                print(f"Warning: Solar loading failed: {e}")
+                print("Info: Using fallback solar pattern")
+                solar_data = self._create_fallback_solar(
                     start_datetime, end_datetime, time_step_minutes
                 )
         else:
@@ -188,6 +202,35 @@ class OptimizationRunner:
         self._print_data_summary(price_data, solar_data, terminal_price)
 
         return price_data, terminal_price, solar_data
+
+    def _should_use_merged_forecast_path(self) -> bool:
+        """Return True when both price and PV should come from live forecast services."""
+        return bool(
+            self.config.has_pv
+            and self.config.pv is not None
+            and self.config.optimization.price_source == "forecast"
+            and self.config.pv.generation_source == "forecast"
+        )
+
+    def _frame_column_to_dict(
+        self,
+        df: pd.DataFrame,
+        column: str,
+        *,
+        scale: float = 1.0,
+    ) -> dict[int, float]:
+        """Convert a DataFrame column into the 1-indexed optimizer input format."""
+        values = pd.to_numeric(df[column], errors="coerce").fillna(0.0).astype(float)
+        result = {
+            i + 1: float(value * scale)
+            for i, value in enumerate(values.iloc[: self.config.total_time_steps])
+        }
+
+        default_value = 0.0 if column == "generation_kw" else float(values.mean())
+        for i in range(len(result) + 1, self.config.total_time_steps + 1):
+            result[i] = default_value * scale
+
+        return result
 
     def _initialize_battery_state(self) -> tuple[BatteryState, BatterySpec]:
         """Initialize battery state from configuration."""

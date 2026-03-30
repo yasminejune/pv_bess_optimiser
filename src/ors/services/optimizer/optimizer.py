@@ -25,14 +25,12 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", "battery_to_optimi
 def create_input_df(**_kwargs) -> pd.DataFrame:
     """Build the intraday input DataFrame for the optimizer.
 
-    Injected at runtime by the pipeline (e.g. via monkeypatch in tests or
-    replaced by the live data loader).  Raises ``NotImplementedError`` if
-    called without being replaced.
+    Defaults to the live forecast integration helper. Tests may monkeypatch
+    this symbol directly to inject synthetic inputs.
     """
-    raise NotImplementedError(  # pragma: no cover
-        "create_input_df must be replaced before calling load_inputs. "
-        "Use monkeypatch in tests or inject via the pipeline."
-    )
+    from src.ors.services.optimizer.integration import create_input_df as live_create_input_df
+
+    return live_create_input_df(**_kwargs)
 
 
 # -----------------------------
@@ -231,7 +229,9 @@ def build_model(
     # Initial energy: use provided value, configured current state, or default to 50% SOC
     if initial_energy_mwh is not None:
         e0 = initial_energy_mwh
-    elif hasattr(battery_spec, 'current_energy_mwh') and battery_spec.current_energy_mwh is not None:
+    elif (
+        hasattr(battery_spec, "current_energy_mwh") and battery_spec.current_energy_mwh is not None
+    ):
         e0 = battery_spec.current_energy_mwh
     else:
         e0 = e_cap * 0.5
