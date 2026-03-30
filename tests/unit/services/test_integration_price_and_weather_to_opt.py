@@ -1,245 +1,175 @@
-# tests/test_create_input_df.py
-
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 import pytest
-
-# TODO: change this import to your real module
-# e.g. from ors.services.input_builder import create_input_df
 import src.ors.services.optimizer.integration as m
+from src.ors.config.optimization_config import PVConfiguration
 
 
-def _dt_range_15m(start: datetime, periods: int) -> pd.DatetimeIndex:
-    return pd.date_range(start=start, periods=periods, freq="15min", tz="UTC")
+def _dt_range(start: datetime, periods: int, freq: str = "15min") -> pd.DatetimeIndex:
+    return pd.date_range(start=start, periods=periods, freq=freq, tz="UTC")
 
 
 @pytest.fixture
-def config_stub():
-    # create_input_df only passes config through; it doesn't inspect fields.
-    return object()
+def runtime_pv_config() -> PVConfiguration:
+    return PVConfiguration(
+        rated_power_kw=5000.0,
+        max_export_kw=4500.0,
+        panel_area_m2=25000.0,
+        panel_efficiency=0.2,
+        generation_source="forecast",
+        location_lat=51.5,
+        location_lon=-0.12,
+    )
 
 
-def test_create_input_df_outer_merge_union_and_timestamp_handling(monkeypatch, config_stub):
-    """
-    Verifies:
-      - PV already has 'timestamp_utc'
-      - Price has 'Timestamp' and gets renamed to 'timestamp_utc' for merge
-      - Outer merge preserves union of timestamps
-      - Output sorted by timestamp_utc
-    """
-    start = datetime(2026, 3, 1, 10, 7, tzinfo=timezone.utc)  # not on boundary
-    expected_start = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)  # floored
+def test_create_input_df_aligns_to_requested_horizon(monkeypatch, runtime_pv_config):
+    start = datetime(2026, 3, 1, 10, 7, tzinfo=timezone.utc)
+    expected_start = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
     end = expected_start + timedelta(hours=1)
 
-    pv_times = _dt_range_15m(expected_start, periods=5)  # 10:00..11:00
-    price_times = _dt_range_15m(expected_start + timedelta(minutes=15), periods=4)  # 10:15..11:00
+    captured: dict[str, object] = {}
 
-    def fake_generate_pv_power_for_date_range(*, config, start_datetime, end_datetime, **kwargs):
+    def fake_generate_pv_df(config, *, client, start_datetime, end_datetime, time_step_minutes):
+        captured["start_datetime"] = start_datetime
+        captured["end_datetime"] = end_datetime
+        captured["time_step_minutes"] = time_step_minutes
+        assert config is runtime_pv_config
+        return pd.DataFrame(
+            {
+                "timestamp": _dt_range(expected_start, periods=4),
+                "generation_kw": [10.0, 20.0, 30.0, 40.0],
+            }
+        )
+
+    def fake_get_price_forecast_df(start_datetime, end_datetime, time_step_minutes, **kwargs):
         assert start_datetime == expected_start
         assert end_datetime == end
+        assert time_step_minutes == 15
         return pd.DataFrame(
             {
-                "timestamp_utc": pv_times,
-                "generation_kw": [0, 1, 2, 3, 4],
+                "timestamp": _dt_range(expected_start, periods=4),
+                "price_intraday": [100.0, 101.0, 102.0, 103.0],
             }
         )
 
-    def fake_run_inference(**kwargs):
-        # Price has Timestamp (NOT timestamp_utc)
-        return pd.DataFrame(
-            {
-                "Timestamp": price_times,
-                "price": [100.0, 101.0, 102.0, 103.0],
-            }
-        )
-
-    monkeypatch.setattr(
-        m, "generate_pv_power_for_date_range", fake_generate_pv_power_for_date_range
-    )
-    monkeypatch.setattr(m, "run_inference", fake_run_inference)
+    monkeypatch.setattr(m, "_generate_pv_df", fake_generate_pv_df)
+    monkeypatch.setattr(m, "get_price_forecast_df", fake_get_price_forecast_df)
 
     df = m.create_input_df(
-        config=config_stub,
+        config=runtime_pv_config,
         start_datetime=start,
         end_datetime=end,
     )
 
-    assert "timestamp" in df.columns
-    assert "generation_kw" in df.columns
-    assert "price" in df.columns
-
-    expected_union = pv_times.union(price_times)
-    got_times = pd.to_datetime(df["timestamp"], utc=True)
-    assert got_times.is_monotonic_increasing
-    assert list(got_times) == list(expected_union)
-
-    # Outer join NaNs expected:
-    # 10:00 exists only in PV -> price NaN
-    first_row = df.iloc[0]
-    assert pd.isna(first_row["price"])
-    assert first_row["generation_kw"] == 0
-
-    # 10:15 exists in both -> not NaN on either
-    row_1015 = df[df["timestamp"] == pd.Timestamp("2026-03-01T10:15:00Z")].iloc[0]
-    assert row_1015["generation_kw"] == 1
-    assert row_1015["price"] == 100.0
+    assert captured["start_datetime"] == expected_start
+    assert captured["end_datetime"] == end
+    assert captured["time_step_minutes"] == 15
+    assert list(df.columns) == ["timestamp", "generation_kw", "price_intraday"]
+    assert list(pd.to_datetime(df["timestamp"], utc=True)) == list(_dt_range(expected_start, 4))
+    assert df["generation_kw"].tolist() == pytest.approx([10.0, 20.0, 30.0, 40.0])
+    assert df["price_intraday"].tolist() == pytest.approx([100.0, 101.0, 102.0, 103.0])
 
 
-def test_create_input_df_injects_horizon_hours_when_missing(monkeypatch, config_stub):
-    """
-    Verifies horizon_hours is injected into kwargs only if missing.
-    """
-    start = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
-    end = start + timedelta(hours=24)
-    expected_horizon = 24.0
+def test_create_input_df_supports_30_minute_resolution(monkeypatch, runtime_pv_config):
+    start = datetime(2026, 3, 1, 0, 0, tzinfo=timezone.utc)
+    end = start + timedelta(hours=2)
 
-    def fake_generate_pv_power_for_date_range(*, config, start_datetime, end_datetime, **kwargs):
+    def fake_generate_pv_df(config, *, client, start_datetime, end_datetime, time_step_minutes):
+        assert time_step_minutes == 30
         return pd.DataFrame(
-            {"timestamp_utc": _dt_range_15m(start, periods=2), "generation_kw": [0, 1]}
+            {
+                "timestamp": _dt_range(start, periods=4, freq="30min"),
+                "generation_kw": [10.0, 20.0, 30.0, 40.0],
+            }
         )
 
-    captured = {}
-
-    def fake_run_inference(**kwargs):
-        captured.update(kwargs)
-        return pd.DataFrame({"Timestamp": _dt_range_15m(start, periods=2), "price": [1.0, 2.0]})
-
-    monkeypatch.setattr(
-        m, "generate_pv_power_for_date_range", fake_generate_pv_power_for_date_range
-    )
-    monkeypatch.setattr(m, "run_inference", fake_run_inference)
-
-    _ = m.create_input_df(config=config_stub, start_datetime=start, end_datetime=end)
-
-    assert "horizon_hours" in captured
-    assert captured["horizon_hours"] == pytest.approx(expected_horizon, rel=1e-9)
-
-
-def test_create_input_df_does_not_override_horizon_hours_if_provided(monkeypatch, config_stub):
-    """
-    Verifies user-provided horizon_hours is respected and not overwritten.
-    """
-    start = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
-    end = start + timedelta(hours=24)
-
-    def fake_generate_pv_power_for_date_range(*, config, start_datetime, end_datetime, **kwargs):
+    def fake_get_price_forecast_df(start_datetime, end_datetime, time_step_minutes, **kwargs):
+        assert time_step_minutes == 30
         return pd.DataFrame(
-            {"timestamp_utc": _dt_range_15m(start, periods=1), "generation_kw": [0]}
+            {
+                "timestamp": _dt_range(start, periods=4, freq="30min"),
+                "price_intraday": [50.0, 55.0, 60.0, 65.0],
+            }
         )
 
-    captured = {}
+    monkeypatch.setattr(m, "_generate_pv_df", fake_generate_pv_df)
+    monkeypatch.setattr(m, "get_price_forecast_df", fake_get_price_forecast_df)
 
-    def fake_run_inference(**kwargs):
-        captured.update(kwargs)
-        return pd.DataFrame({"Timestamp": _dt_range_15m(start, periods=1), "price": [1.0]})
-
-    monkeypatch.setattr(
-        m, "generate_pv_power_for_date_range", fake_generate_pv_power_for_date_range
-    )
-    monkeypatch.setattr(m, "run_inference", fake_run_inference)
-
-    _ = m.create_input_df(
-        config=config_stub,
+    df = m.create_input_df(
+        config=runtime_pv_config,
         start_datetime=start,
         end_datetime=end,
-        horizon_hours=999.0,  # should NOT be overwritten
+        time_step_minutes=30,
     )
 
-    assert captured["horizon_hours"] == 999.0
+    assert len(df) == 4
+    assert df["timestamp"].iloc[0] == pd.Timestamp(start)
+    assert df["price_intraday"].tolist() == pytest.approx([50.0, 55.0, 60.0, 65.0])
 
 
-def test_raises_if_pv_missing_timestamp_utc_column(monkeypatch, config_stub):
-    def fake_generate_pv_power_for_date_range(*, config, start_datetime, end_datetime, **kwargs):
-        return pd.DataFrame({"NOT_TIMESTAMP": [], "generation_kw": []})
-
-    def fake_run_inference(**kwargs):
-        return pd.DataFrame({"Timestamp": [], "price": []})
-
-    monkeypatch.setattr(
-        m, "generate_pv_power_for_date_range", fake_generate_pv_power_for_date_range
-    )
-    monkeypatch.setattr(m, "run_inference", fake_run_inference)
-
-    with pytest.raises(KeyError, match="timestamp_utc"):
-        _ = m.create_input_df(config=config_stub)
-
-
-def test_raises_if_price_missing_timestamp_column(monkeypatch, config_stub):
+def test_create_input_df_raises_if_price_horizon_has_gaps(monkeypatch, runtime_pv_config):
     start = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
+    end = start + timedelta(hours=1)
 
-    def fake_generate_pv_power_for_date_range(*, config, start_datetime, end_datetime, **kwargs):
+    def fake_generate_pv_df(config, *, client, start_datetime, end_datetime, time_step_minutes):
         return pd.DataFrame(
-            {"timestamp_utc": _dt_range_15m(start, periods=1), "generation_kw": [0]}
+            {
+                "timestamp": _dt_range(start, periods=4),
+                "generation_kw": [1.0, 2.0, 3.0, 4.0],
+            }
         )
 
-    def fake_run_inference(**kwargs):
-        return pd.DataFrame({"NOT_TIMESTAMP": [], "price": []})
-
-    monkeypatch.setattr(
-        m, "generate_pv_power_for_date_range", fake_generate_pv_power_for_date_range
-    )
-    monkeypatch.setattr(m, "run_inference", fake_run_inference)
-
-    with pytest.raises(KeyError, match="Timestamp"):
-        _ = m.create_input_df(config=config_stub)
-
-
-def test_create_input_df_uses_lgbm_model_dir_by_default(monkeypatch, config_stub):
-    """Verifies run_inference receives model_path=LGBM_MODEL_DIR when none is passed."""
-    from src.ors.services.price_inference.live_inference import LGBM_MODEL_DIR
-
-    start = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
-    end = start + timedelta(hours=24)
-    captured: dict = {}
-
-    def fake_generate_pv_power_for_date_range(*, config, start_datetime, end_datetime, **kwargs):
+    def fake_get_price_forecast_df(start_datetime, end_datetime, time_step_minutes, **kwargs):
         return pd.DataFrame(
-            {"timestamp_utc": _dt_range_15m(start, periods=1), "generation_kw": [0]}
+            {
+                "timestamp": _dt_range(start, periods=3),
+                "price_intraday": [100.0, 101.0, 102.0],
+            }
         )
 
-    def fake_run_inference(**kwargs):
+    monkeypatch.setattr(m, "_generate_pv_df", fake_generate_pv_df)
+    monkeypatch.setattr(m, "get_price_forecast_df", fake_get_price_forecast_df)
+
+    with pytest.raises(ValueError, match="requested optimization horizon"):
+        m.create_input_df(
+            config=runtime_pv_config,
+            start_datetime=start,
+            end_datetime=end,
+        )
+
+
+def test_create_input_df_passes_custom_model_path(monkeypatch, runtime_pv_config):
+    start = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
+    end = start + timedelta(hours=1)
+    captured: dict[str, object] = {}
+
+    def fake_generate_pv_df(config, *, client, start_datetime, end_datetime, time_step_minutes):
+        return pd.DataFrame(
+            {
+                "timestamp": _dt_range(start, periods=4),
+                "generation_kw": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+
+    def fake_get_price_forecast_df(start_datetime, end_datetime, time_step_minutes, **kwargs):
         captured.update(kwargs)
-        return pd.DataFrame({"Timestamp": _dt_range_15m(start, periods=1), "Price_pred": [1.0]})
+        return pd.DataFrame(
+            {
+                "timestamp": _dt_range(start, periods=4),
+                "price_intraday": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
 
-    monkeypatch.setattr(
-        m, "generate_pv_power_for_date_range", fake_generate_pv_power_for_date_range
-    )
-    monkeypatch.setattr(m, "run_inference", fake_run_inference)
+    monkeypatch.setattr(m, "_generate_pv_df", fake_generate_pv_df)
+    monkeypatch.setattr(m, "get_price_forecast_df", fake_get_price_forecast_df)
 
-    _ = m.create_input_df(config=config_stub, start_datetime=start, end_datetime=end)
-
-    assert "model_path" in captured
-    assert captured["model_path"] == LGBM_MODEL_DIR
-
-
-def test_create_input_df_passes_custom_model_path_to_run_inference(monkeypatch, config_stub):
-    """Verifies an explicit model_path is forwarded unchanged to run_inference."""
-    from pathlib import Path
-
-    start = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
-    end = start + timedelta(hours=24)
     custom_path = Path("/custom/model/dir")
-    captured: dict = {}
-
-    def fake_generate_pv_power_for_date_range(*, config, start_datetime, end_datetime, **kwargs):
-        return pd.DataFrame(
-            {"timestamp_utc": _dt_range_15m(start, periods=1), "generation_kw": [0]}
-        )
-
-    def fake_run_inference(**kwargs):
-        captured.update(kwargs)
-        return pd.DataFrame({"Timestamp": _dt_range_15m(start, periods=1), "Price_pred": [1.0]})
-
-    monkeypatch.setattr(
-        m, "generate_pv_power_for_date_range", fake_generate_pv_power_for_date_range
-    )
-    monkeypatch.setattr(m, "run_inference", fake_run_inference)
-
-    _ = m.create_input_df(
-        config=config_stub,
+    m.create_input_df(
+        config=runtime_pv_config,
         start_datetime=start,
         end_datetime=end,
         model_path=custom_path,
