@@ -38,7 +38,7 @@ class TestGeneratePvPowerForDateRange:
         monkeypatch.setattr(
             integ.weather_client,
             "solar_radiance_15_mins",
-            lambda client, start_datetime=None, end_datetime=None: _one_row_solar_df(
+            lambda client, start_datetime=None, end_datetime=None, **kwargs: _one_row_solar_df(
                 "2026-03-01T12:00:00Z", 800.0
             ),
         )
@@ -58,7 +58,7 @@ class TestGeneratePvPowerForDateRange:
         monkeypatch.setattr(
             integ.weather_client,
             "solar_radiance_15_mins",
-            lambda client, start_datetime=None, end_datetime=None: _one_row_solar_df(
+            lambda client, start_datetime=None, end_datetime=None, **kwargs: _one_row_solar_df(
                 "2026-03-01T00:00:00Z", 0.0
             ),
         )
@@ -77,7 +77,7 @@ class TestGeneratePvPowerForDateRange:
         monkeypatch.setattr(
             integ.weather_client,
             "solar_radiance_15_mins",
-            lambda client, start_datetime=None, end_datetime=None: _one_row_solar_df(
+            lambda client, start_datetime=None, end_datetime=None, **kwargs: _one_row_solar_df(
                 "2026-03-01T12:00:00Z", 1000.0
             ),
         )
@@ -97,7 +97,7 @@ class TestGeneratePvPowerForDateRange:
         monkeypatch.setattr(
             integ.weather_client,
             "solar_radiance_15_mins",
-            lambda client, start_datetime=None, end_datetime=None: _solar_df(
+            lambda client, start_datetime=None, end_datetime=None, **kwargs: _solar_df(
                 [
                     "2026-03-01T10:00:00Z",
                     "2026-03-01T10:15:00Z",
@@ -126,7 +126,7 @@ class TestGeneratePvPowerForDateRange:
         monkeypatch.setattr(
             integ.weather_client,
             "solar_radiance_15_mins",
-            lambda client, start_datetime=None, end_datetime=None: _one_row_solar_df(
+            lambda client, start_datetime=None, end_datetime=None, **kwargs: _one_row_solar_df(
                 "2026-03-01T12:00:00Z", 750.0
             ),
         )
@@ -147,7 +147,7 @@ class TestGeneratePvPowerForDateRange:
         monkeypatch.setattr(
             integ.weather_client,
             "solar_radiance_15_mins",
-            lambda client, start_datetime=None, end_datetime=None: _one_row_solar_df(
+            lambda client, start_datetime=None, end_datetime=None, **kwargs: _one_row_solar_df(
                 "2026-03-01T12:00:00Z", 100.0
             ),
         )
@@ -172,7 +172,7 @@ class TestGeneratePvPowerForDateRange:
             made["called"] = True
             return FakeClient()
 
-        def fake_solar(client, start_datetime=None, end_datetime=None):
+        def fake_solar(client, start_datetime=None, end_datetime=None, **kwargs):
             assert isinstance(client, FakeClient)
             return _one_row_solar_df("2026-03-01T12:00:00Z", 500.0)
 
@@ -188,7 +188,7 @@ class TestGeneratePvPowerForDateRange:
     ) -> None:
         captured: dict[str, object] = {}
 
-        def fake_solar(client, start_datetime=None, end_datetime=None):
+        def fake_solar(client, start_datetime=None, end_datetime=None, **kwargs):
             captured["start_datetime"] = start_datetime
             captured["end_datetime"] = end_datetime
             return _one_row_solar_df("2026-03-01T12:00:00Z", 500.0)
@@ -214,7 +214,7 @@ class TestGeneratePvPowerForDateRange:
         """When no start/end provided, None is passed through to solar_radiance_15_mins."""
         captured: dict[str, object] = {}
 
-        def fake_solar(client, start_datetime=None, end_datetime=None):
+        def fake_solar(client, start_datetime=None, end_datetime=None, **kwargs):
             captured["start_datetime"] = start_datetime
             captured["end_datetime"] = end_datetime
             return _one_row_solar_df("2026-03-01T12:00:00Z", 500.0)
@@ -235,7 +235,7 @@ class TestGeneratePvPowerForDateRange:
         monkeypatch.setattr(
             integ.weather_client,
             "solar_radiance_15_mins",
-            lambda client, start_datetime=None, end_datetime=None: _one_row_solar_df(
+            lambda client, start_datetime=None, end_datetime=None, **kwargs: _one_row_solar_df(
                 "2026-03-01T12:00:00Z", float("nan")
             ),
         )
@@ -268,7 +268,7 @@ class TestGeneratePvPowerForDateRange:
         monkeypatch.setattr(
             integ.weather_client,
             "solar_radiance_15_mins",
-            lambda client, start_datetime=None, end_datetime=None: _one_row_solar_df(
+            lambda client, start_datetime=None, end_datetime=None, **kwargs: _one_row_solar_df(
                 "2026-03-01T12:00:00Z", 200.0
             ),
         )

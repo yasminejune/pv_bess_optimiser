@@ -34,8 +34,8 @@
   },
   
   "optimization": {
-    "optimization_date": "2026-03-08",
-    "start_time": "00:00",
+    "optimization_date": "2026-03-30",
+    "start_time": "09:47",
     "duration_hours": 24,
     "time_step_minutes": 15,
     "price_source": "forecast",

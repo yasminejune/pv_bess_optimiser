@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, cast
 
 import pandas as pd
@@ -192,6 +192,8 @@ def generate_pv_power_for_date_range(
     client: Any | None = None,
     start_datetime: datetime | None = None,
     end_datetime: datetime | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
 ) -> pd.DataFrame:
     """Generate 15-minute PV power output for a datetime range.
 
@@ -208,6 +210,8 @@ def generate_pv_power_for_date_range(
             Defaults to the current UTC time.
         end_datetime (datetime | None): Timezone-aware end of the requested window.
             Defaults to 48 hours after *start_datetime*.
+        latitude (float | None): Optional latitude override for the weather lookup.
+        longitude (float | None): Optional longitude override for the weather lookup.
 
     Returns:
         pd.DataFrame: DataFrame with ``timestamp_utc`` and ``generation_kw`` columns
@@ -225,6 +229,8 @@ def generate_pv_power_for_date_range(
         client,  # type: ignore[arg-type]
         start_datetime=start_datetime,
         end_datetime=end_datetime,
+        latitude=latitude,
+        longitude=longitude,
     )
 
     spec: PVSpec = pv_site_config_to_spec(config)
@@ -240,4 +246,176 @@ def generate_pv_power_for_date_range(
             "timestamp_utc": [s.timestamp for s in states],
             "generation_kw": [s.generation_kw for s in states],
         }
+    )
+
+
+def _to_utc(dt: datetime) -> datetime:
+    """Normalize a datetime to UTC, assuming naive inputs are already UTC."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _runtime_pv_spec(
+    *,
+    rated_power_kw: float,
+    panel_area_m2: float,
+    panel_efficiency: float,
+    max_export_kw: float | None = None,
+    min_generation_kw: float = 0.0,
+    curtailment_supported: bool = True,
+) -> PVSpec:
+    """Build a runtime PVSpec from the optimization config inputs."""
+    return PVSpec(
+        rated_power_kw=rated_power_kw,
+        max_export_kw=max_export_kw,
+        min_generation_kw=min_generation_kw,
+        curtailment_supported=curtailment_supported,
+        panel_area_m2=panel_area_m2,
+        panel_efficiency=panel_efficiency,
+    )
+
+
+def _resample_generation_series(
+    generation_df: pd.DataFrame,
+    *,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    time_step_minutes: int,
+) -> pd.Series:
+    """Align 15-minute PV generation onto the requested optimization horizon."""
+    expected_index = pd.date_range(
+        start=start_datetime,
+        end=end_datetime,
+        freq="15min",
+        inclusive="left",
+        tz="UTC",
+    )
+    generation_series = pd.Series(
+        pd.to_numeric(generation_df["generation_kw"], errors="coerce").to_numpy(),
+        index=pd.to_datetime(generation_df["timestamp_utc"], utc=True),
+        dtype="float64",
+    ).sort_index()
+
+    aligned_15 = (
+        generation_series.reindex(generation_series.index.union(expected_index))
+        .sort_index()
+        .interpolate(method="time")
+        .ffill()
+        .bfill()
+        .reindex(expected_index)
+    )
+
+    target_index = pd.date_range(
+        start=start_datetime,
+        end=end_datetime,
+        freq=f"{time_step_minutes}min",
+        inclusive="left",
+        tz="UTC",
+    )
+
+    if time_step_minutes == 15:
+        resampled = aligned_15
+    else:
+        resampled = aligned_15.resample(
+            f"{time_step_minutes}min",
+            origin=start_datetime,
+        ).mean()
+
+    resampled = resampled.reindex(target_index).fillna(0.0)
+    return resampled.clip(lower=0.0)
+
+
+def generate_runtime_pv_power_for_date_range(
+    *,
+    latitude: float,
+    longitude: float,
+    rated_power_kw: float,
+    panel_area_m2: float,
+    panel_efficiency: float,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    client: Any | None = None,
+    max_export_kw: float | None = None,
+    min_generation_kw: float = 0.0,
+    curtailment_supported: bool = True,
+) -> pd.DataFrame:
+    """Generate PV power output from runtime optimization-config values."""
+    if client is None:
+        client = weather_client.make_client()
+
+    start_utc = _to_utc(start_datetime)
+    end_utc = _to_utc(end_datetime)
+
+    solar_df = weather_client.solar_radiance_15_mins(
+        client,  # type: ignore[arg-type]
+        start_datetime=start_utc,
+        end_datetime=end_utc,
+        latitude=latitude,
+        longitude=longitude,
+    )
+
+    spec = _runtime_pv_spec(
+        rated_power_kw=rated_power_kw,
+        max_export_kw=max_export_kw,
+        min_generation_kw=min_generation_kw,
+        curtailment_supported=curtailment_supported,
+        panel_area_m2=panel_area_m2,
+        panel_efficiency=panel_efficiency,
+    )
+
+    states = pv_states_from_hourly_weather_df(
+        spec,
+        solar_df,
+        timestep_minutes=15,
+    )
+
+    return pd.DataFrame(
+        {
+            "timestamp_utc": [s.timestamp for s in states],
+            "generation_kw": [s.generation_kw for s in states],
+        }
+    )
+
+
+def get_pv_forecast(
+    *,
+    lat: float,
+    lon: float,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    rated_power_kw: float,
+    panel_area_m2: float,
+    panel_efficiency: float,
+    time_step_minutes: int = 15,
+    client: Any | None = None,
+    max_export_kw: float | None = None,
+    min_generation_kw: float = 0.0,
+    curtailment_supported: bool = True,
+) -> list[float]:
+    """Return PV generation forecast values for the requested horizon."""
+    start_utc = _to_utc(start_datetime)
+    end_utc = _to_utc(end_datetime)
+
+    generation_df = generate_runtime_pv_power_for_date_range(
+        latitude=lat,
+        longitude=lon,
+        rated_power_kw=rated_power_kw,
+        panel_area_m2=panel_area_m2,
+        panel_efficiency=panel_efficiency,
+        start_datetime=start_utc,
+        end_datetime=end_utc,
+        client=client,
+        max_export_kw=max_export_kw,
+        min_generation_kw=min_generation_kw,
+        curtailment_supported=curtailment_supported,
+    )
+
+    return list(
+        _resample_generation_series(
+            generation_df,
+            start_datetime=start_utc,
+            end_datetime=end_utc,
+            time_step_minutes=time_step_minutes,
+        )
     )
