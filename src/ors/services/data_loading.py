@@ -142,7 +142,7 @@ def _load_forecasted_prices(
     try:
         # Try to use price inference service
         try:
-            from ..services.price_inference import get_price_forecast  # type: ignore[attr-defined]
+            from ..services.price_inference import get_price_forecast
         except (ImportError, AttributeError):
             raise ImportError("Price inference service unavailable") from None
 
@@ -287,11 +287,13 @@ def _load_forecasted_solar(
     """
     if pv_config.location_lat is None or pv_config.location_lon is None:
         raise DataLoadingError("Location coordinates required for solar forecasting")
+    if pv_config.panel_area_m2 is None:
+        raise DataLoadingError("panel_area_m2 is required for solar forecasting")
 
     try:
         # Try to use weather/PV generation service
         try:
-            from ..services.weather_to_pv import get_pv_forecast  # type: ignore[attr-defined]
+            from ..services.weather_to_pv import get_pv_forecast
         except (ImportError, AttributeError):
             raise ImportError("Weather/PV service unavailable") from None
 
@@ -301,8 +303,12 @@ def _load_forecasted_solar(
             start_datetime=start_datetime,
             end_datetime=end_datetime,
             rated_power_kw=pv_config.rated_power_kw,
-            panel_area_m2=pv_config.panel_area_m2 or 1000.0,
+            panel_area_m2=pv_config.panel_area_m2,
             panel_efficiency=pv_config.panel_efficiency,
+            time_step_minutes=time_step_minutes,
+            max_export_kw=pv_config.max_export_kw,
+            min_generation_kw=pv_config.min_generation_kw,
+            curtailment_supported=pv_config.curtailment_supported,
         )
 
         # Convert kW to MW and create 1-indexed dict

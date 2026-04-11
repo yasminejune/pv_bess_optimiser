@@ -8,23 +8,18 @@ from typing import Any
 
 import pandas as pd
 
+from ors.config.optimization_config import PVConfiguration
 from ors.config.pv_config import PVSiteConfig, SiteType, get_pv_config
-from ors.services.price_inference import run_inference
+from ors.services.price_inference import get_price_forecast_df
 from ors.services.price_inference.live_inference import LGBM_MODEL_DIR
-from ors.services.weather_to_pv import generate_pv_power_for_date_range
+from ors.services.weather_to_pv import (
+    generate_pv_power_for_date_range,
+    generate_runtime_pv_power_for_date_range,
+)
 
 
 def floor_to_prev_15min_utc(dt: datetime) -> datetime:
-    """Floors a datetime to the previous 15-minute boundary in UTC.
-
-    If datetime is naive, it is assumed to be UTC.
-
-    Args:
-        dt (datetime): Input datetime to floor
-
-    Returns:
-        datetime: Datetime floored to previous 15-minute boundary in UTC
-    """
+    """Floor a datetime to the previous 15-minute boundary in UTC."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
 
@@ -33,55 +28,133 @@ def floor_to_prev_15min_utc(dt: datetime) -> datetime:
     return dt.replace(minute=minute, second=0, microsecond=0)
 
 
+def _build_target_index(
+    start_datetime: datetime,
+    end_datetime: datetime,
+    time_step_minutes: int,
+) -> pd.DatetimeIndex:
+    """Build the canonical timestamp index for the optimization horizon."""
+    return pd.date_range(
+        start=start_datetime,
+        end=end_datetime,
+        freq=f"{time_step_minutes}min",
+        inclusive="left",
+        tz="UTC",
+    )
+
+
+def _resample_pv_to_target(
+    pv_df: pd.DataFrame,
+    *,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    time_step_minutes: int,
+) -> pd.DataFrame:
+    """Align PV generation onto the optimization horizon."""
+    expected_15 = _build_target_index(start_datetime, end_datetime, 15)
+    pv_series = pd.Series(
+        pd.to_numeric(pv_df["generation_kw"], errors="coerce").to_numpy(),
+        index=pd.to_datetime(pv_df["timestamp_utc"], utc=True),
+        dtype="float64",
+    ).sort_index()
+
+    aligned_15 = (
+        pv_series.reindex(pv_series.index.union(expected_15))
+        .sort_index()
+        .interpolate(method="time")
+        .ffill()
+        .bfill()
+        .reindex(expected_15)
+    )
+
+    target_index = _build_target_index(start_datetime, end_datetime, time_step_minutes)
+
+    if time_step_minutes == 15:
+        aligned = aligned_15
+    else:
+        aligned = aligned_15.resample(
+            f"{time_step_minutes}min",
+            origin=start_datetime,
+        ).mean()
+
+    aligned = aligned.reindex(target_index).fillna(0.0).clip(lower=0.0)
+
+    return pd.DataFrame(
+        {
+            "timestamp": target_index,
+            "generation_kw": aligned.astype(float).to_numpy(),
+        }
+    )
+
+
+def _generate_pv_df(
+    config: PVSiteConfig | PVConfiguration | None,
+    *,
+    client: Any | None,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    time_step_minutes: int,
+) -> pd.DataFrame:
+    """Generate PV output from either a static site config or runtime PV config."""
+    if config is None:
+        resolved_config: PVSiteConfig | PVConfiguration = get_pv_config(SiteType.BURST_1)
+    else:
+        resolved_config = config
+
+    if isinstance(resolved_config, PVSiteConfig):
+        pv_df = generate_pv_power_for_date_range(
+            config=resolved_config,
+            client=client,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+        )
+    else:
+        if resolved_config.location_lat is None or resolved_config.location_lon is None:
+            raise ValueError("PV forecast config requires location_lat and location_lon")
+        if resolved_config.panel_area_m2 is None:
+            raise ValueError("PV forecast config requires panel_area_m2")
+
+        pv_df = generate_runtime_pv_power_for_date_range(
+            latitude=resolved_config.location_lat,
+            longitude=resolved_config.location_lon,
+            rated_power_kw=resolved_config.rated_power_kw,
+            panel_area_m2=resolved_config.panel_area_m2,
+            panel_efficiency=resolved_config.panel_efficiency,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+            client=client,
+            max_export_kw=resolved_config.max_export_kw,
+            min_generation_kw=resolved_config.min_generation_kw,
+            curtailment_supported=resolved_config.curtailment_supported,
+        )
+
+    if "timestamp_utc" not in pv_df.columns:
+        raise KeyError("'timestamp_utc' column not found in PV dataframe")
+
+    return _resample_pv_to_target(
+        pv_df,
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+        time_step_minutes=time_step_minutes,
+    )
+
+
 def create_input_df(
-    config: PVSiteConfig | None = None,
+    config: PVSiteConfig | PVConfiguration | None = None,
     *,
     client: Any | None = None,
     start_datetime: datetime | None = None,
     end_datetime: datetime | None = None,
+    time_step_minutes: int = 15,
     model_path: Path = LGBM_MODEL_DIR,
     **kwargs: Any,
 ) -> pd.DataFrame:
-    """Generate a combined DataFrame of PV forecast and price prediction output.
-
-        - PV power forecast data
-        - Price prediction model output
-
-    Data contract (as implemented):
-        - PV dataframe must contain: 'timestamp_utc'
-        - Price dataframe must contain: 'Timestamp' (capital T)
-
-    The function:
-        1. Determines a time window (default = now rounded to previous 15 min → +1 day).
-        2. Generates PV production forecast for that window.
-        3. Runs the price prediction model using **kwargs.
-        4. Renames price Timestamp -> timestamp_utc.
-        5. Merges both datasets on UTC timestamps using an outer merge.
-
-    Args:
-        config (PVSiteConfig | None): PV site configuration
-        client (Any | None): Reserved for future use (not used currently)
-        start_datetime (datetime | None): Start of forecasting window. If None, defaults to current UTC time
-            floored to previous 15-minute boundary
-        end_datetime (datetime | None): End of forecasting window. If None, defaults to start_datetime + 1 day
-        model_path (Path): Path to the LGBM model directory or a specific .joblib file.
-            Defaults to LGBM_MODEL_DIR (models/price_prediction/lgbm_recursive_single_model).
-            Pass a .pkl path to use the legacy XGBoost model instead
-        **kwargs: Forwarded directly to `run_inference`. If `horizon_hours` is not provided,
-            it is injected based on (end_datetime - start_datetime)
-
-    Returns:
-        pd.DataFrame: Merged PV + price dataframe, outer-joined on 'timestamp_utc', sorted by time
-    """
-    if config is None:
-        config = get_pv_config(SiteType.BURST_1)
-    # --- Resolve start datetime ---
+    """Generate a combined DataFrame of PV forecast and price prediction output."""
     if start_datetime is None:
         start_datetime = floor_to_prev_15min_utc(datetime.now(timezone.utc))
     else:
         start_datetime = floor_to_prev_15min_utc(start_datetime)
 
-    # --- Resolve end datetime ---
     if end_datetime is None:
         end_datetime = start_datetime + timedelta(days=1)
     else:
@@ -92,43 +165,23 @@ def create_input_df(
     if end_datetime <= start_datetime:
         raise ValueError("end_datetime must be after start_datetime")
 
-    # --- Compute horizon in hours ---
-    horizon_hours = int((end_datetime - start_datetime).total_seconds() / 3600.0)
-
-    # --- Generate PV forecast ---
-    df_pv = generate_pv_power_for_date_range(
-        config=config,
+    df_pv = _generate_pv_df(
+        config,
+        client=client,
         start_datetime=start_datetime,
         end_datetime=end_datetime,
+        time_step_minutes=time_step_minutes,
     )
-    print(df_pv)
-
-    # PV is expected to already have timestamp_utc
-    if "timestamp_utc" not in df_pv.columns:
-        raise KeyError("'timestamp_utc' column not found in PV dataframe")
-
-    df_pv["timestamp_utc"] = pd.to_datetime(df_pv["timestamp_utc"], utc=True)
-
-    # --- Run price prediction model ---
-    if "horizon_hours" not in kwargs:
-        kwargs["horizon_hours"] = horizon_hours
-
-    df_price = run_inference(model_path=model_path, reference_time=start_datetime, **kwargs)
-
-    # Price is expected to have Timestamp
-    if "Timestamp" not in df_price.columns:
-        raise KeyError("'Timestamp' column not found in price dataframe")
-
-    df_price = df_price.rename(columns={"Timestamp": "timestamp_utc"})
-    df_price["timestamp_utc"] = pd.to_datetime(df_price["timestamp_utc"], utc=True)
-
-    # --- Outer merge ---
-    df = (
-        df_pv.merge(df_price, on="timestamp_utc", how="outer")
-        .sort_values("timestamp_utc")
-        .reset_index(drop=True)
+    df_price = get_price_forecast_df(
+        start_datetime,
+        end_datetime,
+        time_step_minutes,
+        model_path=model_path,
+        **kwargs,
     )
 
-    df.rename(columns={"timestamp_utc": "timestamp", "Price_pred": "price_intraday"}, inplace=True)
+    df = df_pv.merge(df_price, on="timestamp", how="left")
+    if df["price_intraday"].isna().any():
+        raise ValueError("Price forecast did not cover the requested optimization horizon")
 
-    return df[:96]
+    return df.sort_values("timestamp").reset_index(drop=True)

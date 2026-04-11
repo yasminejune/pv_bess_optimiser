@@ -17,6 +17,8 @@ from src.ors.services.data_loading import (
     _generate_dummy_prices,
     _generate_dummy_solar,
     _interpolate_hourly_to_timesteps,
+    _load_forecasted_prices,
+    _load_forecasted_solar,
     _load_historical_prices,
     _load_historical_solar,
     _load_manual_prices,
@@ -91,6 +93,47 @@ class TestLoadSolarData:
         with pytest.raises(DataLoadingError, match="Manual generation profile"):
             load_solar_data(config, start, end)
 
+    def test_forecast_solar_requires_panel_area(self):
+        config = _make_config(pv_source="forecast")
+        config.pv.location_lat = 51.5
+        config.pv.location_lon = -0.12
+        config.pv.panel_area_m2 = None
+        start = datetime(2026, 1, 1)
+        end = datetime(2026, 1, 2)
+        with pytest.raises(DataLoadingError, match="panel_area_m2"):
+            load_solar_data(config, start, end)
+
+    def test_forecast_solar_uses_runtime_pv_adapter(self, monkeypatch):
+        config = _make_config(pv_source="forecast")
+        config.pv.location_lat = 51.5
+        config.pv.location_lon = -0.12
+        config.pv.panel_area_m2 = 2000.0
+        config.pv.max_export_kw = 90.0
+        config.pv.min_generation_kw = 5.0
+        config.pv.curtailment_supported = False
+        start = datetime(2026, 1, 1)
+        end = datetime(2026, 1, 1, 1, 0)
+        captured: dict[str, object] = {}
+
+        def fake_get_pv_forecast(**kwargs):
+            captured.update(kwargs)
+            return [1000.0, 2000.0, 3000.0, 4000.0]
+
+        monkeypatch.setattr(
+            "src.ors.services.weather_to_pv.get_pv_forecast",
+            fake_get_pv_forecast,
+        )
+
+        solar = _load_forecasted_solar(config.pv, start, end, 15)
+
+        assert captured["lat"] == pytest.approx(51.5)
+        assert captured["lon"] == pytest.approx(-0.12)
+        assert captured["panel_area_m2"] == pytest.approx(2000.0)
+        assert captured["max_export_kw"] == pytest.approx(90.0)
+        assert captured["min_generation_kw"] == pytest.approx(5.0)
+        assert captured["curtailment_supported"] is False
+        assert solar == {1: 1.0, 2: 2.0, 3: 3.0, 4: 4.0}
+
 
 # ---------------------------------------------------------------------------
 # _load_historical_prices
@@ -137,6 +180,49 @@ class TestLoadHistoricalPrices:
         )
         assert len(price_dict) == 96
         assert all(v == pytest.approx(42.0) for v in price_dict.values())
+
+
+class TestLoadForecastPrices:
+    def test_forecast_prices_use_inference_adapter(self, monkeypatch):
+        config = _make_config(price_source="forecast")
+        start = datetime(2026, 1, 1)
+        end = datetime(2026, 1, 1, 1, 0)
+        captured: dict[str, object] = {}
+
+        def fake_get_price_forecast(start_datetime, end_datetime, time_step_minutes):
+            captured["start_datetime"] = start_datetime
+            captured["end_datetime"] = end_datetime
+            captured["time_step_minutes"] = time_step_minutes
+            return [50.0, 55.0, 60.0, 65.0]
+
+        monkeypatch.setattr(
+            "src.ors.services.price_inference.get_price_forecast",
+            fake_get_price_forecast,
+        )
+
+        price_dict, terminal_price = _load_forecasted_prices(start, end, 15, config)
+
+        assert captured["start_datetime"] == start
+        assert captured["end_datetime"] == end
+        assert captured["time_step_minutes"] == 15
+        assert price_dict == {1: 50.0, 2: 55.0, 3: 60.0, 4: 65.0}
+        assert terminal_price == pytest.approx(57.5)
+
+    def test_load_forecasted_prices_falls_back_to_dummy_on_import_error(self, monkeypatch):
+        config = _make_config(price_source="forecast")
+        start = datetime(2026, 1, 1)
+        end = datetime(2026, 1, 1, 1, 0)
+
+        monkeypatch.setattr(
+            "src.ors.services.price_inference.get_price_forecast",
+            lambda *args, **kwargs: (_ for _ in ()).throw(ImportError("missing")),
+        )
+
+        price_dict, terminal_price = _load_forecasted_prices(start, end, 15, config)
+
+        assert len(price_dict) == 4
+        assert all(isinstance(v, float) for v in price_dict.values())
+        assert math.isfinite(terminal_price)
 
 
 # ---------------------------------------------------------------------------
