@@ -384,15 +384,15 @@ The optimisation model enforces the following constraints at every 15-minute tim
 
 ## 8. Troubleshooting
 
-| Issue | Likely Cause | Resolution |
-|-------|--------------|------------|
-| `ModuleNotFoundError` | Running with system Python instead of the virtual environment | Activate the virtual environment before running |
-| `FileNotFoundError: model.pkl` | Model file missing or path incorrect | Verify the file exists at `models/price_prediction/model.pkl` or use `--model <path>` |
-| `No forecast rows found` | `--date` value falls outside the range of available data | Use a datetime within the training data range or run without `--date` for live mode |
-| Optimizer returns no solution | Required solver not installed | Install HiGHS with `pip install highspy` or install GLPK as an alternative |
-| Price predictions differ from training | Expected when using live APIs | Use `--use-csv` to reproduce training predictions exactly |
-| API request fails or times out | No internet connection or external API unavailable | Check network connectivity |
-| `ValueError` on battery config load | Invalid or missing parameter in `battery_config.json` | Check all required fields are present and within valid ranges |
+| Issue                                  | Likely Cause                                                  | Resolution                                                                            |
+|----------------------------------------|---------------------------------------------------------------|---------------------------------------------------------------------------------------|
+| `ModuleNotFoundError`                  | Running with system Python instead of the virtual environment | Activate the virtual environment before running                                       |
+| `FileNotFoundError: model.pkl`         | Model file missing or path incorrect                          | Verify the file exists at `models/price_prediction/model.pkl` or use `--model <path>` |
+| `No forecast rows found`               | `--date` value falls outside the range of available data      | Use a datetime within the training data range or run without `--date` for live mode   |
+| Optimizer returns no solution          | Required solver not installed                                 | Install HiGHS with `pip install highspy` or install GLPK as an alternative            |
+| Price predictions differ from training | Expected when using live APIs                                 | Use `--use-csv` to reproduce training predictions exactly                             |
+| API request fails or times out         | No internet connection or external API unavailable            | Check network connectivity                                                            |
+| `ValueError` on battery config load    | Invalid or missing parameter in `battery_config.json`         | Check all required fields are present and within valid ranges                         |
 
 ---
 
